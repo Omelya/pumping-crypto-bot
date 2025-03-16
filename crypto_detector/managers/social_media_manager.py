@@ -44,18 +44,18 @@ class SocialMediaManager:
         """
         config = {
             'twitter': {
-                "api_key": os.getenv('TWITTER_API_KEY'),
-                "api_secret": os.getenv('TWITTER_API_SECRET'),
-                "bearer_token": os.getenv('TWITTER_BEARER_TOKEN'),
+                # "api_key": os.getenv('TWITTER_API_KEY'),
+                # "api_secret": os.getenv('TWITTER_API_SECRET'),
+                # "bearer_token": os.getenv('TWITTER_BEARER_TOKEN'),
             },
             'reddit': {
-                "client_id": os.getenv('REDDIT_CLIENT_ID'),
-                "client_secret": os.getenv('REDDIT_CLIENT_SECRET'),
-                "user_agent": os.getenv('REDDIT_USER_AGENT'),
+                # "client_id": os.getenv('REDDIT_CLIENT_ID'),
+                # "client_secret": os.getenv('REDDIT_CLIENT_SECRET'),
+                # "user_agent": os.getenv('REDDIT_USER_AGENT'),
             },
             'telegram': {
-                "api_id": os.getenv('TELEGRAM_API_ID'),
-                "api_hash": os.getenv('TELEGRAM_API_HASH'),
+                # "api_id": os.getenv('TELEGRAM_API_ID'),
+                # "api_hash": os.getenv('TELEGRAM_API_HASH'),
             },
             'general': {
                 'rate_limit_delay': 1.0,
@@ -67,6 +67,9 @@ class SocialMediaManager:
 
     def _initialize_adapters(self):
         """Initialize all available social media adapters"""
+        # Очищення попередніх адаптерів, якщо такі є
+        self.adapters = {}
+
         # Initialize Twitter adapter
         if 'api_key' in self.config['twitter'] or 'bearer_token' in self.config['twitter']:
             try:
@@ -89,7 +92,7 @@ class SocialMediaManager:
         else:
             logger.info("No Twitter credentials provided, skipping Twitter adapter initialization")
 
-        # Initialize Reddit adapter
+        # Initialize Reddit adapter with improved error handling
         if 'client_id' in self.config['reddit'] or 'client_secret' in self.config['reddit']:
             try:
                 reddit_adapter = RedditAdapter(
@@ -100,35 +103,36 @@ class SocialMediaManager:
                                                              self.config['general'].get('cache_duration', 300))
                 )
 
-                # Check if adapter can be used (has valid credentials)
-                if reddit_adapter.client_id and reddit_adapter.client_secret:
+                # Перевірка валідності токена перед додаванням адаптера
+                auth_token = self._test_reddit_auth(reddit_adapter)
+                if auth_token:
                     self.adapters['reddit'] = reddit_adapter
-                    logger.info("Reddit adapter initialized successfully")
+                    logger.info("Reddit adapter initialized successfully and authenticated")
                 else:
-                    logger.warning("Reddit adapter initialized but no valid credentials provided")
+                    logger.warning("Reddit adapter could not authenticate, not adding adapter")
             except Exception as e:
                 logger.error(f"Failed to initialize Reddit adapter: {str(e)}")
         else:
             logger.info("No Reddit credentials provided, skipping Reddit adapter initialization")
 
         # Initialize Telegram adapter (even in estimation mode)
-        try:
-            telegram_adapter = TelegramAdapter(
-                api_id=self.config['telegram'].get('api_id'),
-                api_hash=self.config['telegram'].get('api_hash'),
-                cache_duration=self.config['telegram'].get('cache_duration',
-                                                           self.config['general'].get('cache_duration', 300))
-            )
-
-            # Always add Telegram adapter (will work in estimation mode if no credentials)
-            self.adapters['telegram'] = telegram_adapter
-
-            if telegram_adapter.api_id and telegram_adapter.api_hash:
-                logger.info("Telegram adapter initialized with actual credentials")
-            else:
-                logger.info("Telegram adapter initialized in estimation mode")
-        except Exception as e:
-            logger.error(f"Failed to initialize Telegram adapter: {str(e)}")
+        # try:
+        #     telegram_adapter = TelegramAdapter(
+        #         api_id=self.config['telegram'].get('api_id'),
+        #         api_hash=self.config['telegram'].get('api_hash'),
+        #         cache_duration=self.config['telegram'].get('cache_duration',
+        #                                                    self.config['general'].get('cache_duration', 300))
+        #     )
+        #
+        #     # Always add Telegram adapter (will work in estimation mode if no credentials)
+        #     self.adapters['telegram'] = telegram_adapter
+        #
+        #     if telegram_adapter.api_id and telegram_adapter.api_hash:
+        #         logger.info("Telegram adapter initialized with actual credentials")
+        #     else:
+        #         logger.info("Telegram adapter initialized in estimation mode")
+        # except Exception as e:
+        #     logger.error(f"Failed to initialize Telegram adapter: {str(e)}")
 
         # Log summary
         active_platforms = list(self.adapters.keys())
@@ -158,31 +162,75 @@ class SocialMediaManager:
                 'error': "No social media adapters available"
             }
 
-        # Get analysis from the social analyzer
-        result = await self.analyzer.detect_social_media_mentions(symbol, active_adapters)
+        # Fallback when no data is available
+        fallback_result = {
+            'social_signal': False,
+            'mentions': 0,
+            'average_mentions': 0,
+            'percent_change': 0,
+            'growth_acceleration': 0
+        }
+
+        # Extract coin name from symbol
+        coin_name = symbol.split('/')[0]
+
+        # Визначаємо робочі адаптери з тими, які не видають помилки
+        working_adapters = []
+        for adapter in active_adapters:
+            try:
+                # Простий тест, щоб перевірити, чи працює адаптер
+                mentions = await adapter.get_current_mentions(coin_name)
+                working_adapters.append(adapter)
+            except Exception as e:
+                logger.warning(f"Adapter {adapter.name()} is not working: {str(e)}")
+
+        # Якщо немає робочих адаптерів, повертаємо значення за замовчуванням
+        if not working_adapters:
+            logger.warning("No working social media adapters available")
+            fallback_result['platforms'] = {
+                platform: {'error': 'Adapter not working'} for platform in self.adapters.keys()
+            }
+            return fallback_result
+
+        try:
+            # Get analysis from the social analyzer
+            result = await self.analyzer.detect_social_media_mentions(symbol, working_adapters)
+        except Exception as e:
+            logger.error(f"Error getting social media analysis: {str(e)}")
+            result = fallback_result
 
         # Add platform-specific details
         platform_details = {}
         for platform, adapter in self.adapters.items():
             try:
-                mentions = await adapter.get_current_mentions(coin_name=symbol.split('/')[0])
+                mentions = await adapter.get_current_mentions(coin_name=coin_name)
                 platform_details[platform] = {
                     'mentions': mentions
                 }
 
                 # Add sentiment if available
                 if hasattr(adapter, 'get_sentiment'):
-                    sentiment = await adapter.get_sentiment(coin_name=symbol.split('/')[0])
-                    if sentiment:
-                        platform_details[platform]['sentiment'] = sentiment
+                    try:
+                        sentiment = await adapter.get_sentiment(coin_name=coin_name)
+                        if sentiment:
+                            platform_details[platform]['sentiment'] = sentiment
+                    except Exception as sentiment_e:
+                        logger.error(f"Error getting sentiment from {platform}: {str(sentiment_e)}")
+                        platform_details[platform]['sentiment_error'] = str(sentiment_e)
             except Exception as e:
                 logger.error(f"Error getting details from {platform}: {str(e)}")
                 platform_details[platform] = {
-                    'error': str(e)
+                    'error': str(e),
+                    'mentions': 0  # Використовуємо 0 як значення за замовчуванням
                 }
 
         # Add platform details to result
         result['platforms'] = platform_details
+
+        # Забезпечуємо наявність усіх необхідних полів
+        for key in fallback_result:
+            if key not in result:
+                result[key] = fallback_result[key]
 
         return result
 
@@ -209,7 +257,14 @@ class SocialMediaManager:
                 }
 
         # Get aggregated analysis
-        volume_change = await self.analyzer.get_social_volume_change(coin_name)
+        try:
+            volume_change = await self.analyzer.get_social_volume_change(coin_name)
+        except Exception as e:
+            logger.error(f"Error getting social volume change: {str(e)}")
+            volume_change = {
+                "insufficient_data": True,
+                "coin": coin_name
+            }
 
         return {
             'symbol': symbol,
@@ -357,3 +412,17 @@ class SocialMediaManager:
         """
         coin_name = symbol.split('/')[0]
         return self.analyzer.get_coin_social_history(coin_name)
+
+    def _test_reddit_auth(self, adapter):
+        """
+        Test Reddit authentication without blocking initialization
+
+        :param adapter: Reddit adapter instance
+        :return: Authentication token or None if failed
+        """
+        try:
+            # Attempt to get an auth token
+            return adapter._get_auth_token()
+        except Exception as e:
+            logger.error(f"Reddit authentication test failed: {str(e)}")
+            return None

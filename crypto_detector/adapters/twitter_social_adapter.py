@@ -1,8 +1,10 @@
+import asyncio
 import os
+import random
 import time
 import aiohttp
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 import logging
 
 from crypto_detector.adapters.social_media_adapter import SocialMediaAdapter
@@ -43,6 +45,60 @@ class TwitterAdapter(SocialMediaAdapter):
         """Get the name of this social media adapter"""
         return "Twitter"
 
+    # Додаємо функцію для обробки запитів з повторними спробами
+    async def _make_twitter_request(self, url: str, params: Dict, headers: Dict, max_retries: int = 3) -> Tuple[
+        int, Any]:
+        """
+        Make a Twitter API request with retry logic for rate limits
+
+        :param url: API endpoint URL
+        :param params: Query parameters
+        :param headers: Request headers
+        :param max_retries: Maximum number of retries
+        :return: Tuple of (status_code, response_data)
+        """
+        retry_count = 0
+        backoff_time = 2  # Starting backoff time in seconds
+
+        while retry_count < max_retries:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, headers=headers) as response:
+                        status = response.status
+                        response_text = await response.text()
+
+                        # If successful, return the response
+                        if status == 200:
+                            return status, await response.json()
+
+                        # If rate limited, apply exponential backoff
+                        if status == 429:
+                            # Get retry-after header if available
+                            retry_after = response.headers.get('retry-after')
+                            if retry_after:
+                                wait_time = int(retry_after)
+                            else:
+                                # Exponential backoff with jitter
+                                wait_time = backoff_time + random.uniform(0, 1)
+                                backoff_time *= 2
+
+                            logger.warning(f"Twitter API rate limited. Waiting {wait_time} seconds before retry.")
+                            await asyncio.sleep(wait_time)
+                            retry_count += 1
+                            continue
+
+                        # Other error, log and return
+                        return status, response_text
+            except Exception as e:
+                logger.error(f"Error making Twitter API request: {str(e)}")
+                retry_count += 1
+                await asyncio.sleep(backoff_time)
+                backoff_time *= 2
+
+        # If we've exhausted retries
+        return 0, "Max retries reached"
+
+    # Модифікований метод get_current_mentions з використанням нової функції
     async def get_current_mentions(self, coin_name: str) -> int:
         """
         Get the current number of mentions for a specific cryptocurrency on Twitter
@@ -63,16 +119,31 @@ class TwitterAdapter(SocialMediaAdapter):
             search_terms = self._create_search_terms(coin_name)
             query = " OR ".join([f'"{term}"' for term in search_terms])
 
-            # Calculate time range (last hour)
-            end_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
-            start_time = (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            # Використовуємо UTC час для запобігання проблем з часовими поясами
+            # Встановлюємо end_time на 30 секунд у минулому
+            # (Twitter вимагає мінімум 10 секунд, але ми даємо більший запас)
+            end_time = datetime.utcnow() - timedelta(seconds=30)
+            start_time = end_time - timedelta(hours=1)
+
+            # Формат RFC 3339 з Z на кінці для позначення UTC
+            end_time_str = end_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+            start_time_str = start_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            # Додаткова перевірка для впевненості, що часові мітки в минулому
+            now = datetime.utcnow()
+            if end_time >= now or start_time >= now:
+                logger.warning(f"Time calculation error: end_time or start_time is not in the past")
+                end_time = now - timedelta(seconds=30)
+                start_time = end_time - timedelta(hours=1)
+                end_time_str = end_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+                start_time_str = start_time.strftime("%Y-%m-%dT%H:%M:%SZ")
 
             # Twitter API v2 endpoint for recent search
             url = "https://api.twitter.com/2/tweets/counts/recent"
             params = {
                 "query": query,
-                "start_time": start_time,
-                "end_time": end_time,
+                "start_time": start_time_str,
+                "end_time": end_time_str,
                 "granularity": "hour"
             }
 

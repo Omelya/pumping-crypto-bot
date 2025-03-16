@@ -88,37 +88,44 @@ class RedditAdapter(SocialMediaAdapter):
 
             # Search in each subreddit
             for subreddit in subreddits:
-                # Rate limit to avoid hitting Reddit API limits
-                await self._rate_limit()
+                try:
+                    # Rate limit to avoid hitting Reddit API limits
+                    await self._rate_limit()
 
-                # Get recent posts
-                posts_url = f"https://oauth.reddit.com/r/{subreddit}/new"
-                params = {
-                    "limit": 100  # Maximum allowed by Reddit API
-                }
+                    # Get recent posts
+                    posts_url = f"https://oauth.reddit.com/r/{subreddit}/new"
+                    params = {
+                        "limit": 100  # Maximum allowed by Reddit API
+                    }
 
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(posts_url, headers=api_headers, params=params) as posts_response:
-                        if posts_response.status == 200:
-                            posts_data = await posts_response.json()
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(posts_url, headers=api_headers, params=params) as posts_response:
+                            if posts_response.status == 200:
+                                posts_data = await posts_response.json()
 
-                            if 'data' in posts_data and 'children' in posts_data['data']:
-                                for post in posts_data['data']['children']:
-                                    post_data = post['data']
-                                    created_time = post_data.get('created_utc', 0)
+                                if 'data' in posts_data and 'children' in posts_data['data']:
+                                    for post in posts_data['data']['children']:
+                                        post_data = post['data']
+                                        created_time = post_data.get('created_utc', 0)
 
-                                    # Check if post is within the last hour
-                                    if created_time >= time_threshold:
-                                        # Check if any search term is in the title or selftext
-                                        title = post_data.get('title', '').lower()
-                                        selftext = post_data.get('selftext', '').lower()
+                                        # Check if post is within the last hour
+                                        if created_time >= time_threshold:
+                                            # Check if any search term is in the title or selftext
+                                            title = post_data.get('title', '').lower()
+                                            selftext = post_data.get('selftext', '').lower()
 
-                                        for term in search_terms:
-                                            if term.lower() in title or term.lower() in selftext:
-                                                total_mentions += 1
-                                                break
-                        else:
-                            logger.warning(f"Reddit API error for r/{subreddit}: {posts_response.status}")
+                                            for term in search_terms:
+                                                if term.lower() in title or term.lower() in selftext:
+                                                    total_mentions += 1
+                                                    break
+                            elif posts_response.status == 404:
+                                logger.warning(f"Reddit API error for r/{subreddit}: 404 - Subreddit not found")
+                            else:
+                                logger.warning(f"Reddit API error for r/{subreddit}: {posts_response.status}")
+                except Exception as sub_e:
+                    # Log and continue with next subreddit
+                    logger.error(f"Error processing subreddit r/{subreddit}: {str(sub_e)}")
+                    continue
 
             # Cache the result
             self.cache[cache_key] = total_mentions
@@ -367,43 +374,6 @@ class RedditAdapter(SocialMediaAdapter):
             logger.error(f"Error getting Reddit auth token: {str(e)}")
             return None
 
-    def _get_crypto_subreddits(self, coin_name: str, for_query: bool = False) -> List[str]:
-        """
-        Get relevant cryptocurrency subreddits
-
-        :param coin_name: Cryptocurrency name
-        :param for_query: Whether this is for a query string (comma-separated) or a list
-        :return: List of subreddit names
-        """
-        # Default cryptocurrency subreddits
-        subreddits = [
-            "cryptocurrency",
-            "cryptomarkets",
-            "bitcoin",
-            "altcoin",
-            "binance",
-            "cryptomoonshots",
-            "satoshistreetbets"
-        ]
-
-        # Add coin-specific subreddit if it exists
-        if coin_name.lower() != "btc":  # BTC uses r/bitcoin
-            subreddits.append(coin_name.lower())
-
-        # Add special cases for popular coins
-        if coin_name.upper() == "ETH":
-            subreddits.append("ethereum")
-        elif coin_name.upper() == "ADA":
-            subreddits.append("cardano")
-        elif coin_name.upper() == "DOGE":
-            subreddits.append("dogecoin")
-        elif coin_name.upper() == "XRP":
-            subreddits.append("ripple")
-        elif coin_name.upper() == "SOL":
-            subreddits.append("solana")
-
-        return subreddits
-
     def _create_search_terms(self, coin_name: str) -> List[str]:
         """
         Create search terms for a cryptocurrency
@@ -484,6 +454,66 @@ class RedditAdapter(SocialMediaAdapter):
                                         else:
                                             result_dict[hour_key] = 1
                                         break
+
+    def _get_crypto_subreddits(self, coin_name: str, for_query: bool = False) -> List[str]:
+        """
+        Get relevant cryptocurrency subreddits
+
+        :param coin_name: Cryptocurrency name
+        :param for_query: Whether this is for a query string (comma-separated) or a list
+        :return: List of subreddit names
+        """
+        # Покращений список основних криптовалютних субреддітів
+        # Перевірені існуючі субреддіти
+        subreddits = [
+            "cryptocurrency",
+            "cryptomarkets",
+            "bitcoin",
+            "altcoin",
+            "binance",
+            "cryptomoonshots",
+            "satoshistreetbets"
+        ]
+
+        # Додавання спеціальних субреддітів для популярних монет
+        coin_specific_subreddits = {
+            "BTC": ["bitcoin", "bitcoinmarkets"],
+            "ETH": ["ethereum", "ethtrader", "ethfinance"],
+            "ADA": ["cardano"],
+            "DOGE": ["dogecoin"],
+            "XRP": ["ripple"],
+            "SOL": ["solana"],
+            "LINK": ["chainlink"],
+            "DOT": ["dot", "polkadot"],
+            "AVAX": ["avalancheavax"],
+            "MATIC": ["0xpolygon", "maticnetwork"],
+            "BNB": ["binance"],
+            "SHIB": ["shibarmy"],
+            "PEPE": ["pepecoins"],
+            "ATOM": ["cosmosnetwork"],
+            "NEAR": ["nearprotocol"],
+            "FTM": ["fantomfoundation"],
+            "LTC": ["litecoin"],
+            "XMR": ["monero"],
+            "ALGO": ["algorand"]
+        }
+
+        # Додавання специфічних для монети субреддітів, якщо вони існують
+        if coin_name.upper() in coin_specific_subreddits:
+            subreddits.extend(coin_specific_subreddits[coin_name.upper()])
+        elif len(
+                coin_name) >= 3:  # Додаємо монету як субреддіт тільки якщо назва достатньо довга (щоб уникнути таких як a8)
+            # Перевіряємо тільки базові монети, а не короткі символи
+            # Це запобігає спробам отримати доступ до неіснуючих субреддітів
+            subreddits.append(coin_name.lower())
+
+        # Видалення дублікатів, зберігаючи порядок
+        unique_subreddits = []
+        for subreddit in subreddits:
+            if subreddit not in unique_subreddits:
+                unique_subreddits.append(subreddit)
+
+        return unique_subreddits
 
     def clear_cache(self):
         """Clear the cache"""
