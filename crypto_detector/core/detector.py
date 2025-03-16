@@ -9,9 +9,9 @@ from crypto_detector.data.exchange_client import ExchangeClient
 from crypto_detector.analysis.volume_analyzer import VolumeAnalyzer
 from crypto_detector.analysis.price_analyzer import PriceAnalyzer
 from crypto_detector.analysis.orderbook_analyzer import OrderBookAnalyzer
-from crypto_detector.analysis.social_analyzer import SocialAnalyzer
 from crypto_detector.analysis.time_pattern_analyzer import TimePatternAnalyzer
 from crypto_detector.analysis.correlation_analyzer import CorrelationAnalyzer
+from crypto_detector.managers.social_media_manager import SocialMediaManager
 
 
 class CryptoActivityDetector:
@@ -46,9 +46,10 @@ class CryptoActivityDetector:
         self.volume_analyzer = VolumeAnalyzer(threshold_multiplier)
         self.price_analyzer = PriceAnalyzer()
         self.orderbook_analyzer = OrderBookAnalyzer()
-        self.social_analyzer = SocialAnalyzer()
         self.time_pattern_analyzer = TimePatternAnalyzer()
         self.correlation_analyzer = CorrelationAnalyzer()
+
+        self.social_media_manager = SocialMediaManager()
 
         # Відстеження результатів
         self.alerts = []
@@ -87,7 +88,7 @@ class CryptoActivityDetector:
         tasks = [
             self.fetch_ohlcv(symbol, '5m'),
             self.exchange_client.fetch_order_book(symbol),
-            self.social_analyzer.detect_social_media_mentions(symbol),
+            self.social_media_manager.detect_social_media_mentions(symbol),
             self.correlation_analyzer.analyze_market_correlation(symbol, all_symbols),
             self.time_pattern_analyzer.check_time_pattern()
         ]
