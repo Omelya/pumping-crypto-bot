@@ -83,18 +83,3 @@ LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'  # Форм�
 # Налаштування моніторингу
 MONITORING_INTERVAL = 300       # Інтервал між перевірками в секундах (5 хвилин)
 ALERTS_DIR = 'alerts'           # Директорія для збереження сповіщень
-
-#Соцмережі
-#Twitter
-TWITTER_API_KEY = '8O8LdvJU2oGm03LUrd3BE3pqq'
-TWITTER_API_SECRET = '4osSUrmD25uFl8YPC9Sy8P8mFTtDl8LD9W1tl3Df2dIMyududT'
-TWITTER_BEARER_TOKEN = 'AAAAAAAAAAAAAAAAAAAAAI3ozwEAAAAAlGCrGGXRWBYOUMcVjqLMxdomZJk%3DYK4iXY2Rqoa1axE87ZBvbQIlhvyIhgbr9xnTK2NurWQh3pZr1a'
-
-#Reddit
-REDDIT_CLIENT_ID = 'gWSkeeqglKEzuw5tjTrIxQ'
-REDDIT_CLIENT_SECRET = 'bBmFxSW2_yXfRcc72EBGM9mnM0EnKg'
-REDDIT_USER_AGENT = 'crypto_detector/1.0'
-
-#Telegram
-TELEGRAM_API_ID = '8595206'
-TELEGRAM_API_HASH = '1e07f65fafa218c92a43ea1a33ba990b'
