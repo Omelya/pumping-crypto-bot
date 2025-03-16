@@ -1,6 +1,6 @@
 import os
 import logging
-import crypto_detector.config.settings as settings
+from dotenv import load_dotenv
 from typing import Dict, List, Optional, Any, Type
 
 from crypto_detector.adapters.social_media_adapter import SocialMediaAdapter
@@ -11,6 +11,8 @@ from crypto_detector.analysis.social_analyzer import SocialAnalyzer
 
 # Setup logging
 logger = logging.getLogger(__name__)
+
+load_dotenv()
 
 
 class SocialMediaManager:
@@ -42,18 +44,18 @@ class SocialMediaManager:
         """
         config = {
             'twitter': {
-                "api_key": settings.TWITTER_API_KEY,
-                "api_secret": settings.TWITTER_API_SECRET,
-                "bearer_token": settings.TWITTER_BEARER_TOKEN,
+                "api_key": os.getenv('TWITTER_API_KEY'),
+                "api_secret": os.getenv('TWITTER_API_SECRET'),
+                "bearer_token": os.getenv('TWITTER_BEARER_TOKEN'),
             },
             'reddit': {
-                "client_id": settings.REDDIT_CLIENT_ID,
-                "client_secret": settings.REDDIT_CLIENT_SECRET,
-                "user_agent": settings.REDDIT_USER_AGENT,
+                "client_id": os.getenv('REDDIT_CLIENT_ID'),
+                "client_secret": os.getenv('REDDIT_CLIENT_SECRET'),
+                "user_agent": os.getenv('REDDIT_USER_AGENT'),
             },
             'telegram': {
-                "api_id": settings.TELEGRAM_API_ID,
-                "api_hash": settings.TELEGRAM_API_HASH,
+                "api_id": os.getenv('TELEGRAM_API_ID'),
+                "api_hash": os.getenv('TELEGRAM_API_HASH'),
             },
             'general': {
                 'rate_limit_delay': 1.0,
