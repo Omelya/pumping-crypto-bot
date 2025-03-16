@@ -1,0 +1,7 @@
+.env
+detector.log
+alerts
+backtest_charts
+backtest_results
+historical_data
+ml_data
