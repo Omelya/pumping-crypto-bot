@@ -1,7 +1,7 @@
-import os
-import json
 import numpy as np
-from datetime import datetime
+import crypto_detector.config.settings as settings
+
+from sklearn.metrics import precision_score, recall_score
 
 from crypto_detector.data.data_storage import DataStorage
 
@@ -21,25 +21,16 @@ class SignalWeightsManager:
         self.storage = storage or DataStorage()
 
         # Дефолтні ваги сигналів
-        self.default_weights = {
-            'Аномальний обсяг торгів': 0.35,
-            'Активна цінова динаміка': 0.25,
-            'Дисбаланс книги ордерів': 0.20,
-            'Підвищена активність у соціальних мережах': 0.20,
-            'Нові лістинги на біржах': 0.10,
-            'Підозрілий часовий патерн': 0.15,
-            'Корельована активність з іншими монетами': 0.15,
-            'Прискорення зростання об\'єму': 0.15
-        }
+        self.default_weights = settings.DEFAULT_SIGNAL_WEIGHTS
 
         # Оптимізовані ваги для різних категорій токенів
         self.token_weights = {}
 
         # Параметри для адаптивного навчання
-        self.learning_rate = 0.05  # Швидкість навчання
-        self.min_weight = 0.05  # Мінімальна вага сигналу
-        self.max_weight = 0.50  # Максимальна вага сигналу
-        self.total_max_weight = 1.5  # Максимальна сума ваг
+        self.learning_rate = settings.LEARNING_RATE  # Швидкість навчання
+        self.min_weight = settings.MIN_WEIGHT  # Мінімальна вага сигналу
+        self.max_weight = settings.MAX_WEIGHT  # Максимальна вага сигналу
+        self.total_max_weight = settings.TOTAL_MAX_WEIGHT  # Максимальна сума ваг
 
         # Завантаження збережених ваг
         self._load_weights()
@@ -95,14 +86,7 @@ class SignalWeightsManager:
         coin_name = symbol.split('/')[0]
 
         # Мапа категорій токенів
-        token_categories = {
-            'meme': ['PEPE', 'SHIB', 'DOGE', 'FLOKI', 'CAT', 'CTT', 'WIF'],
-            'defi': ['UNI', 'AAVE', 'CAKE', 'COMP', 'MKR', 'SNX', 'YFI', 'SUSHI'],
-            'l1_blockchain': ['ETH', 'SOL', 'ADA', 'AVAX', 'DOT', 'NEAR', 'FTM', 'ATOM'],
-            'l2_scaling': ['MATIC', 'ARB', 'OP', 'IMX', 'ZK', 'BASE', 'STX'],
-            'gaming': ['AXS', 'SAND', 'MANA', 'ENJ', 'GALA', 'ILV'],
-            'exchange': ['BNB', 'CRO', 'FTT', 'KCS', 'LEO', 'OKB']
-        }
+        token_categories = settings.TOKEN_CATEGORIES
 
         # Пошук категорії токена
         for category, tokens in token_categories.items():
@@ -132,14 +116,28 @@ class SignalWeightsManager:
 
         # Для кожного сигналу визначаємо наскільки він був активний у правильних і неправильних передбаченнях
         for signal_name in current_weights.keys():
-            correct_activation = sum(1 for e in correct_predictions if signal_name in e.get('signals', {}))
-            wrong_activation = sum(1 for e in wrong_predictions if signal_name in e.get('signals', {}))
+            try:
+                # Підрахунок активацій у правильних передбаченнях
+                correct_activation = 0
+                for entry in correct_predictions:
+                    if 'signals' in entry and isinstance(entry['signals'], dict) and signal_name in entry['signals']:
+                        correct_activation += 1
 
-            correct_ratio = correct_activation / len(correct_predictions) if correct_predictions else 0
-            wrong_ratio = wrong_activation / len(wrong_predictions) if wrong_predictions else 0
+                # Підрахунок активацій у неправильних передбаченнях
+                wrong_activation = 0
+                for entry in wrong_predictions:
+                    if 'signals' in entry and isinstance(entry['signals'], dict) and signal_name in entry['signals']:
+                        wrong_activation += 1
 
-            # Значення важливості - різниця між активацією в правильних і неправильних передбаченнях
-            signal_importance[signal_name] = correct_ratio - wrong_ratio
+                # Розрахунок співвідношень
+                correct_ratio = correct_activation / len(correct_predictions) if correct_predictions else 0
+                wrong_ratio = wrong_activation / len(wrong_predictions) if wrong_predictions else 0
+
+                # Значення важливості - різниця між активацією в правильних і неправильних передбаченнях
+                signal_importance[signal_name] = correct_ratio - wrong_ratio
+            except Exception as e:
+                print(f"Помилка при обробці сигналу {signal_name}: {str(e)}")
+                signal_importance[signal_name] = 0
 
         # Оновлюємо ваги на основі важливості сигналів
         updated_weights = current_weights.copy()
@@ -159,7 +157,7 @@ class SignalWeightsManager:
 
         # Зберігаємо оновлені ваги
         self.token_weights[category] = updated_weights
-        self.storage.save_signal_weights(updated_weights, category)
+        self.save_weights()
 
         return updated_weights
 
@@ -171,14 +169,26 @@ class SignalWeightsManager:
         :param category: Категорія токена
         :return: Оптимізовані ваги
         """
+        if not training_data:
+            print("Немає даних для оптимізації ваг")
+            return self.token_weights.get(category, self.default_weights.copy())
+
         # Розділення на правильні та неправильні передбачення
         correct_predictions = []
         wrong_predictions = []
 
         for entry in training_data:
-            predicted_event = entry.get('probability', 0) > 0.5
-            actual_event = entry.get('actual_event', False)
+            if not isinstance(entry, dict):
+                continue
 
+            probability = entry.get('probability', 0)
+            actual_event = entry.get('actual_event')
+
+            # Пропускаємо записи без мітки або ймовірності
+            if actual_event is None or probability is None:
+                continue
+
+            predicted_event = probability > 0.5
             if predicted_event == actual_event:
                 correct_predictions.append(entry)
             else:
@@ -198,6 +208,15 @@ class SignalWeightsManager:
         :param threshold: Поріг для класифікації
         :return: Метрики ефективності
         """
+        if not test_data:
+            print("Немає даних для оцінки ваг")
+            return {
+                'precision': 0,
+                'recall': 0,
+                'f1_score': 0,
+                'confusion_matrix': [[0, 0], [0, 0]]
+            }
+
         # Отримання ваг для категорії
         weights = self.get_weights_for_category(category)
 
@@ -206,8 +225,17 @@ class SignalWeightsManager:
         y_pred = []
 
         for entry in test_data:
+            if not isinstance(entry, dict):
+                continue
+
+            actual_event = entry.get('actual_event')
+
+            # Пропускаємо записи без мітки
+            if actual_event is None:
+                continue
+
             # Справжнє значення
-            y_true.append(1 if entry.get('actual_event', False) else 0)
+            y_true.append(1 if actual_event else 0)
 
             # Перерахунок ймовірності з новими вагами
             signals = entry.get('signals', {})
@@ -229,6 +257,16 @@ class SignalWeightsManager:
 
         # Розрахунок метрик
         from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix
+
+        # Перевірка, чи є достатньо даних для розрахунку метрик
+        if len(y_true) < 2 or all(y == y_true[0] for y in y_true):
+            print("Недостатньо різноманітних даних для розрахунку метрик")
+            return {
+                'precision': 0,
+                'recall': 0,
+                'f1_score': 0,
+                'confusion_matrix': [[0, 0], [0, 0]]
+            }
 
         precision = precision_score(y_true, y_pred, zero_division=0)
         recall = recall_score(y_true, y_pred, zero_division=0)
@@ -252,30 +290,20 @@ class SignalWeightsManager:
         :param category: Категорія токена
         :return: Оптимальний поріг та метрики
         """
-        # Отримання ваг для категорії
-        weights = self.get_weights_for_category(category)
+        if not test_data:
+            print("Немає даних для пошуку оптимального порогу")
+            return 0.5, {}
+
+        # Фільтруємо записи з мітками
+        labeled_entries = [e for e in test_data if isinstance(e, dict) and e.get('actual_event') is not None]
+
+        if len(labeled_entries) < 5:
+            print("Недостатньо даних для пошуку оптимального порогу")
+            return 0.5, {}
 
         # Підготовка для розрахунку метрик
-        y_true = [1 if entry.get('actual_event', False) else 0 for entry in test_data]
-        probabilities = []
-
-        for entry in test_data:
-            # Перерахунок ймовірності з новими вагами
-            signals = entry.get('signals', {})
-            probability = 0.0
-
-            for signal_name, signal_data in signals.items():
-                if signal_name in weights:
-                    # Отримання внеску сигналу
-                    contribution = signal_data.get('contribution', 0.0)
-                    # Нормалізація на поточну вагу
-                    current_weight = signal_data.get('weight', 0.0)
-                    if current_weight > 0:
-                        normalized_contribution = contribution / current_weight
-                        # Розрахунок нового внеску з оптимізованою вагою
-                        probability += weights[signal_name] * normalized_contribution
-
-            probabilities.append(probability)
+        y_true = [1 if e.get('actual_event') else 0 for e in labeled_entries]
+        probabilities = [e.get('probability', 0) for e in labeled_entries]
 
         # Перебір різних порогів
         from sklearn.metrics import f1_score
@@ -288,18 +316,21 @@ class SignalWeightsManager:
         for threshold in thresholds:
             y_pred = [1 if p > threshold else 0 for p in probabilities]
 
-            precision = precision_score(y_true, y_pred, zero_division=0)
-            recall = recall_score(y_true, y_pred, zero_division=0)
-            f1 = f1_score(y_true, y_pred, zero_division=0)
+            try:
+                precision = precision_score(y_true, y_pred, zero_division=0)
+                recall = recall_score(y_true, y_pred, zero_division=0)
+                f1 = f1_score(y_true, y_pred, zero_division=0)
 
-            if f1 > best_f1:
-                best_f1 = f1
-                best_threshold = threshold
-                best_metrics = {
-                    'precision': precision,
-                    'recall': recall,
-                    'f1_score': f1
-                }
+                if f1 > best_f1:
+                    best_f1 = f1
+                    best_threshold = threshold
+                    best_metrics = {
+                        'precision': precision,
+                        'recall': recall,
+                        'f1_score': f1
+                    }
+            except Exception as e:
+                print(f"Помилка при розрахунку метрик для порогу {threshold}: {str(e)}")
 
         return best_threshold, best_metrics
 
@@ -308,8 +339,14 @@ class SignalWeightsManager:
         Збереження всіх ваг
         """
         # Збереження дефолтних ваг
-        self.storage.save_signal_weights(self.default_weights)
+        try:
+            self.storage.save_signal_weights(self.default_weights)
 
-        # Збереження ваг для кожної категорії
-        for category, weights in self.token_weights.items():
-            self.storage.save_signal_weights(weights, category)
+            # Збереження ваг для кожної категорії
+            for category, weights in self.token_weights.items():
+                self.storage.save_signal_weights(weights, category)
+
+            print("Ваги сигналів успішно збережено")
+
+        except Exception as e:
+            print(f"Помилка при збереженні ваг сигналів: {str(e)}")

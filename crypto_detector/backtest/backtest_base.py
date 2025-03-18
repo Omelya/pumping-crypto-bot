@@ -62,7 +62,7 @@ class CryptoBacktester:
         end_datetime = datetime.strptime(end_date, '%Y-%m-%d')
 
         # Створення директорії для символу, якщо вона не існує
-        symbol_dir = os.path.join(self.data_dir, symbol.replace('/', '_'))
+        symbol_dir = os.path.join(self.data_dir, 'currency', symbol.replace('/', '_'))
         if not os.path.exists(symbol_dir):
             os.makedirs(symbol_dir)
 
@@ -105,7 +105,7 @@ class CryptoBacktester:
             df.sort_index(inplace=True)
 
             # Збереження даних у файл
-            filename = os.path.join(symbol_dir, f"{timeframe}_{start_date}_{end_date}.csv")
+            filename = os.path.join(symbol_dir, f"currency/{timeframe}_{start_date}_{end_date}.csv")
             df.to_csv(filename)
             print(f"Збережено {len(df)} записів у {filename}")
 
@@ -202,6 +202,7 @@ class CryptoBacktester:
         # Шлях до файлу з історичними даними
         data_file = os.path.join(
             self.data_dir,
+            'currency',
             symbol.replace('/', '_'),
             f"5m_{start_date}_{end_date}.csv"
         )
@@ -316,9 +317,14 @@ class CryptoBacktester:
             print("Confusion Matrix:")
             print(cm)
 
+            # Створення директорії для зберігання результатів ML, якщо вона не існує
+            ml_data_dir = os.path.join(self.data_dir, "ml_data")
+            if not os.path.exists(ml_data_dir):
+                os.makedirs(ml_data_dir)
+
             # Підготовка даних для ML
             ml_data = pd.DataFrame(predictions)
-            ml_data_file = f"{symbol.replace('/', '_')}_ml_data.csv"
+            ml_data_file = os.path.join(ml_data_dir, f"{symbol.replace('/', '_')}_ml_data.csv")
             ml_data.to_csv(ml_data_file, index=False)
             print(f"Дані для машинного навчання збережені у {ml_data_file}")
 
@@ -463,6 +469,11 @@ class CryptoBacktester:
         predictions_df.set_index('timestamp', inplace=True)
         predictions_df.sort_index(inplace=True)
 
+        # Створення директорії для графіків, якщо вона не існує
+        charts_dir = os.path.join(self.data_dir, "charts")
+        if not os.path.exists(charts_dir):
+            os.makedirs(charts_dir)
+
         # Візуалізація результатів
         plt.figure(figsize=(15, 10))
 
@@ -514,5 +525,10 @@ class CryptoBacktester:
         plt.legend()
 
         plt.tight_layout()
-        plt.savefig(f"{symbol.replace('/', '_')}_backtest_results.png")
-        plt.show()
+
+        # Збереження графіка у вказаній директорії
+        chart_file = os.path.join(charts_dir, f"{symbol.replace('/', '_')}_backtest_results.png")
+        plt.savefig(chart_file)
+        plt.close()  # Закриваємо фігуру для звільнення пам'яті
+
+        print(f"Візуалізацію збережено як {chart_file}")

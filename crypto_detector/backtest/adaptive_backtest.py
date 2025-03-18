@@ -3,7 +3,6 @@ import json
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
 from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix
 
 from crypto_detector.backtest.backtest_base import CryptoBacktester
@@ -53,6 +52,7 @@ class AdaptiveBacktester(CryptoBacktester):
         # Завантаження даних (вже завантажені в стандартному бектестингу)
         data_file = os.path.join(
             self.data_dir,
+            'currency',
             symbol.replace('/', '_'),
             f"5m_{start_date}_{end_date}.csv"
         )
@@ -222,9 +222,14 @@ class AdaptiveBacktester(CryptoBacktester):
             for signal, weight in optimized_weights.items():
                 print(f"{signal:<45}: {weight:.3f}")
 
+            # Створюємо директорії для збереження даних ML
+            ml_data_dir = os.path.join(self.data_dir, "ml_data")
+            if not os.path.exists(ml_data_dir):
+                os.makedirs(ml_data_dir)
+
             # Підготовка даних для ML навчання
             ml_data = pd.DataFrame(predictions)
-            ml_data_file = f"{symbol.replace('/', '_')}_adaptive_ml_data.csv"
+            ml_data_file = os.path.join(ml_data_dir, f"{symbol.replace('/', '_')}_adaptive_ml_data.csv")
             ml_data.to_csv(ml_data_file, index=False)
             print(f"Дані для машинного навчання збережені у {ml_data_file}")
 
@@ -260,6 +265,11 @@ class AdaptiveBacktester(CryptoBacktester):
         predictions_df['timestamp'] = pd.to_datetime(predictions_df['timestamp'])
         predictions_df.set_index('timestamp', inplace=True)
         predictions_df.sort_index(inplace=True)
+
+        # Створення директорії для графіків, якщо вона не існує
+        charts_dir = os.path.join(self.data_dir, "charts")
+        if not os.path.exists(charts_dir):
+            os.makedirs(charts_dir)
 
         # Створення візуалізацій
         plt.figure(figsize=(20, 15))
@@ -409,7 +419,196 @@ class AdaptiveBacktester(CryptoBacktester):
         plt.grid(True)
 
         plt.tight_layout()
-        plt.savefig(f"{symbol.replace('/', '_')}_comparative_results.png")
-        plt.show()
 
-        print(f"Візуалізація збережена як {symbol.replace('/', '_')}_comparative_results.png")
+        # Збереження графіка у вказаній директорії
+        chart_file = os.path.join(charts_dir, f"{symbol.replace('/', '_')}_comparative_results.png")
+        plt.savefig(chart_file)
+        plt.close()  # Закриваємо фігуру для звільнення пам'яті
+
+        print(f"Візуалізацію збережено як {chart_file}")
+
+    def train_all_ml_models(self):
+        """
+        Навчання ML моделей для всіх категорій на основі даних бектестингу
+        """
+        print("\nЗапуск навчання ML моделей на основі результатів бектестингу...")
+
+        # Перевірка наявності директорії для ML даних
+        ml_data_dir = os.path.join(self.data_dir, "ml_data")
+        if not os.path.exists(ml_data_dir):
+            print(f"Директорія {ml_data_dir} не існує. Неможливо навчити моделі.")
+            return
+
+        # Отримання списку всіх CSV файлів у директорії ML даних
+        ml_files = [f for f in os.listdir(ml_data_dir) if f.endswith('_adaptive_ml_data.csv')]
+
+        if not ml_files:
+            print("Не знайдено файлів з даними для ML навчання.")
+            return
+
+        print(f"Знайдено {len(ml_files)} файлів з даними для навчання.")
+
+        # Для кожного файлу готуємо дані для відповідного символу/категорії
+        for ml_file in ml_files:
+            # Отримання символу з імені файлу
+            symbol = ml_file.replace('_adaptive_ml_data.csv', '').replace('_', '/')
+
+            # Визначення категорії токена
+            category = self.adaptive_detector._get_token_category(symbol)
+
+            print(f"\nПідготовка навчання моделі для {symbol} (категорія: {category})...")
+
+            # Повний шлях до файлу
+            ml_data_path = os.path.join(ml_data_dir, ml_file)
+
+            try:
+                # Навчання моделі для цієї категорії
+                self._train_model_for_category(ml_data_path, category, symbol)
+            except Exception as e:
+                print(f"Помилка при навчанні моделі для {symbol}: {str(e)}")
+
+        print("\nЗавершення навчання ML моделей. Збереження результатів...")
+
+        # Збереження всіх навчених моделей і ваг
+        if hasattr(self.adaptive_detector, '_save_weights'):
+            self.adaptive_detector._save_weights()
+
+        print("Навчання ML моделей завершено успішно.")
+
+    def _train_model_for_category(self, ml_data_path, category, symbol):
+        """
+        Навчання ML моделі для конкретної категорії
+
+        :param ml_data_path: Шлях до файлу з даними
+        :param category: Категорія токена
+        :param symbol: Символ криптовалюти
+        """
+        # Перевірка наявності MLTrainer в адаптивному детекторі
+        if not hasattr(self.adaptive_detector, 'ml_trainer'):
+            print("MLTrainer не ініціалізовано в адаптивному детекторі.")
+            return
+
+        # Діагностика проблемних даних
+        try:
+            print(f"\nДіагностика даних у файлі {ml_data_path}")
+            raw_data = pd.read_csv(ml_data_path)
+            print(f"Розмір даних: {raw_data.shape}")
+            print(f"Колонки: {raw_data.columns.tolist()}")
+
+            # Попередня обробка даних
+            preprocessed_file = ml_data_path.replace('.csv', '_preprocessed.csv')
+
+            # Видаляємо рядкові колонки з сигналами або зберігаємо у тому ж вигляді
+            # MLTrainer тепер сам визначить, що робити з цими колонками
+            raw_data.to_csv(preprocessed_file, index=False)
+            print(f"Збережено дані для навчання у {preprocessed_file}")
+
+            # Підготовка даних для навчання через оновлений MLTrainer
+            print("Передаємо дані в MLTrainer для обробки...")
+            X, y = self.adaptive_detector.ml_trainer.prepare_features(preprocessed_file)
+
+            if len(X) < 30:
+                print(f"Недостатньо даних для навчання моделі: {len(X)} зразків. Потрібно мінімум 30.")
+                return
+
+            print(f"Підготовлено {len(X)} зразків для навчання.")
+
+            # Оптимізація гіперпараметрів з обробкою помилок
+            print(f"Оптимізація гіперпараметрів для категорії {category}...")
+            try:
+                best_params, _ = self.adaptive_detector.ml_trainer.optimize_hyperparameters(
+                    X, y, model_type='gradient_boosting', category=category
+                )
+                print(f"Оптимальні гіперпараметри для {category}: {best_params}")
+            except Exception as e:
+                print(f"Помилка при оптимізації гіперпараметрів: {str(e)}")
+                best_params = {
+                    'n_estimators': 100,
+                    'learning_rate': 0.1,
+                    'max_depth': 3
+                }
+                print(f"Використовуємо стандартні гіперпараметри: {best_params}")
+
+            # Навчання моделі з оптимальними параметрами
+            print(f"Навчання моделі для {category}...")
+            try:
+                model, model_info = self.adaptive_detector.ml_trainer.train_model(
+                    X, y, model_type='gradient_boosting', category=category, **best_params
+                )
+
+                # Збереження моделі в адаптивному детекторі
+                self.adaptive_detector.ml_models[category] = model
+
+                # Збереження моделі на диск
+                if hasattr(self.adaptive_detector, '_save_ml_model'):
+                    self.adaptive_detector._save_ml_model(category)
+
+                # Створення директорії для графіків, якщо вона не існує
+                charts_dir = os.path.join(self.data_dir, "charts", "ml_models")
+                if not os.path.exists(charts_dir):
+                    os.makedirs(charts_dir)
+
+                # Збереження графіка важливості фічей
+                try:
+                    import matplotlib.pyplot as plt
+
+                    # Візуалізація важливості фічей
+                    self.adaptive_detector.ml_trainer.visualize_feature_importance(
+                        model_info['feature_importance'],
+                        title=f"Важливість ознак для категорії {category}",
+                        top_n=20
+                    )
+
+                    # Збереження графіка
+                    chart_path = os.path.join(charts_dir, f"{symbol.replace('/', '_')}_feature_importance.png")
+                    plt.savefig(chart_path)
+                    plt.close()
+
+                    print(f"Графік важливості ознак збережено у {chart_path}")
+                except Exception as e:
+                    print(f"Помилка при створенні графіка важливості ознак: {str(e)}")
+
+                # Оцінка моделі через крос-валідацію
+                try:
+                    cv_report, _ = self.adaptive_detector.ml_trainer.cross_validate_and_report(
+                        X, y, model_type='gradient_boosting', category=category, **best_params
+                    )
+
+                    # Збереження звіту про крос-валідацію
+                    report_file = os.path.join(charts_dir, f"{symbol.replace('/', '_')}_cv_report.json")
+                    import json
+                    with open(report_file, 'w') as f:
+                        json.dump(cv_report, f, indent=4, default=str)
+
+                    print(f"Звіт про крос-валідацію збережено у {report_file}")
+                except Exception as e:
+                    print(f"Помилка при крос-валідації: {str(e)}")
+
+                # Виведення метрик моделі
+                print(f"Метрики моделі для {category}:")
+                print(f"  Precision: {model_info['metrics']['precision']:.4f}")
+                print(f"  Recall: {model_info['metrics']['recall']:.4f}")
+                print(f"  F1 Score: {model_info['metrics']['f1_score']:.4f}")
+
+                # Пошук оптимального порогу для класифікації
+                try:
+                    y_prob = model.predict_proba(X)[:, 1]
+                    optimal_threshold, _ = self.adaptive_detector.ml_trainer.plot_threshold_optimization(
+                        y, y_prob, metric='f1', title=f"Оптимізація порогу для {category}"
+                    )
+
+                    # Збереження графіка оптимізації порогу
+                    chart_path = os.path.join(charts_dir, f"{symbol.replace('/', '_')}_threshold_optimization.png")
+                    plt.savefig(chart_path)
+                    plt.close()
+
+                    print(f"Оптимальний поріг для {category}: {optimal_threshold:.4f}")
+                except Exception as e:
+                    print(f"Помилка при оптимізації порогу: {str(e)}")
+
+            except Exception as e:
+                print(f"Помилка при навчанні моделі для {category}: {str(e)}")
+                raise
+
+        except Exception as e:
+            print(f"Загальна помилка при навчанні моделі для {category}: {str(e)}")

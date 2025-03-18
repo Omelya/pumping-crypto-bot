@@ -1,16 +1,14 @@
 import os
 import json
-import numpy as np
 import pandas as pd
 from datetime import datetime
-from sklearn.preprocessing import StandardScaler
-from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.model_selection import train_test_split
 from sklearn.metrics import precision_score, recall_score, f1_score
 import joblib
 import crypto_detector.config.settings as settings
 
-from crypto_detector.core.detector import CryptoActivityDetector
+from crypto_detector.models.ml_trainer import MLTrainer
+from crypto_detector.models.signal_weights import SignalWeightsManager
+from crypto_detector.data.data_storage import DataStorage
 
 
 class AdaptiveCryptoDetector:
@@ -34,11 +32,14 @@ class AdaptiveCryptoDetector:
         if not os.path.exists(model_dir):
             os.makedirs(model_dir)
 
-        # Дефолтні ваги сигналів
-        self.default_weights = settings.DEFAULT_SIGNAL_WEIGHTS
+        # Ініціалізація компонентів для зберігання, навчання і управління вагами
+        self.storage = DataStorage()
+        self.ml_trainer = MLTrainer(storage=self.storage)
+        self.weights_manager = SignalWeightsManager(storage=self.storage)
 
-        # Оптимізовані ваги для кожного типу токенів
-        self.token_weights = {}
+        # Отримання ваг сигналів з weights_manager
+        self.default_weights = self.weights_manager.default_weights
+        self.token_weights = self.weights_manager.token_weights
 
         # Словник моделей для різних типів токенів
         self.ml_models = {}
@@ -46,17 +47,16 @@ class AdaptiveCryptoDetector:
         # Історія результатів для навчання
         self.training_history = {}
 
-        # Мапа категорій токенів - переміщаємо перед викликом _load_saved_models
+        # Мапа категорій токенів
         self.token_categories = settings.TOKEN_CATEGORIES
 
-        # Завантаження збережених ваг і моделей, якщо вони існують
-        self._load_saved_weights()
+        # Завантаження збережених моделей, якщо вони існують
         self._load_saved_models()
 
         # Навчальні гіперпараметри
-        self.learning_rate = settings.LEARNING_RATE  # Швидкість, з якою адаптуються ваги
-        self.training_threshold = settings.TRAINING_THRESHOLD  # Мінімальна кількість зразків для адаптації ваг
-        self.retraining_interval = settings.RETRAINING_INTERVAL  # Інтервал для перенавчання ML моделей
+        self.learning_rate = settings.LEARNING_RATE
+        self.training_threshold = settings.TRAINING_THRESHOLD
+        self.retraining_interval = settings.RETRAINING_INTERVAL
 
     def _get_token_category(self, symbol):
         """
@@ -72,28 +72,6 @@ class AdaptiveCryptoDetector:
                 return category
 
         return 'other'
-
-    def _load_saved_weights(self):
-        """Завантаження збережених ваг з файлу"""
-        weights_file = os.path.join(self.model_dir, 'signal_weights.json')
-
-        if os.path.exists(weights_file):
-            try:
-                with open(weights_file, 'r') as f:
-                    self.token_weights = json.load(f)
-                print(f"Завантажено оптимізовані ваги для {len(self.token_weights)} категорій токенів")
-            except Exception as e:
-                print(f"Помилка завантаження ваг: {str(e)}")
-
-    def _save_weights(self):
-        """Збереження оптимізованих ваг у файл"""
-        weights_file = os.path.join(self.model_dir, 'signal_weights.json')
-
-        try:
-            with open(weights_file, 'w') as f:
-                json.dump(self.token_weights, f, indent=4)
-        except Exception as e:
-            print(f"Помилка збереження ваг: {str(e)}")
 
     def _load_saved_models(self):
         """Завантаження збережених ML моделей"""
@@ -137,13 +115,7 @@ class AdaptiveCryptoDetector:
         :param symbol: Символ криптовалюти
         :return: Словник з вагами сигналів
         """
-        category = self._get_token_category(symbol)
-
-        if category in self.token_weights:
-            return self.token_weights[category]
-
-        # Якщо ваг для категорії немає, використовуємо дефолтні
-        return self.default_weights
+        return self.weights_manager.get_weights_for_token(symbol)
 
     async def analyze_token(self, symbol, all_symbols=None):
         """
@@ -318,16 +290,16 @@ class AdaptiveCryptoDetector:
                     break
 
             # Перевіряємо, чи достатньо даних для адаптації ваг
-            self._check_and_update_weights(category)
+            self._update_weights_using_manager(category)
 
             # Перевіряємо, чи треба перенавчити ML модель
             labeled_entries = [e for e in self.training_history[category] if e['actual_event'] is not None]
             if len(labeled_entries) >= self.retraining_interval:
-                self._train_ml_model(category)
+                self._train_ml_model_with_trainer(category)
 
-    def _check_and_update_weights(self, category):
+    def _update_weights_using_manager(self, category):
         """
-        Перевірка та оновлення ваг на основі накопичених даних
+        Оновлення ваг за допомогою SignalWeightsManager
 
         :param category: Категорія токена
         """
@@ -336,9 +308,6 @@ class AdaptiveCryptoDetector:
 
         if len(labeled_entries) < self.training_threshold:
             return
-
-        # Поточні ваги для категорії
-        current_weights = self.token_weights.get(category, self.default_weights)
 
         # Розділяємо на успішні та неуспішні передбачення
         correct_predictions = []
@@ -355,80 +324,108 @@ class AdaptiveCryptoDetector:
         if not wrong_predictions:
             return
 
-        # Обчислюємо середню активацію сигналів у правильних та помилкових передбаченнях
-        signal_importance = {}
+        # Використовуємо SignalWeightsManager для оновлення ваг
+        self.weights_manager.update_weights(category, correct_predictions, wrong_predictions)
 
-        # Для кожного сигналу визначаємо наскільки він був активний у правильних і неправильних передбаченнях
-        for signal_name in current_weights.keys():
-            correct_activation = sum(1 for e in correct_predictions if signal_name in e['signals'])
-            wrong_activation = sum(1 for e in wrong_predictions if signal_name in e['signals'])
-
-            correct_ratio = correct_activation / len(correct_predictions) if correct_predictions else 0
-            wrong_ratio = wrong_activation / len(wrong_predictions) if wrong_predictions else 0
-
-            # Значення важливості - різниця між активацією в правильних і неправильних передбаченнях
-            signal_importance[signal_name] = correct_ratio - wrong_ratio
-
-        # Оновлюємо ваги на основі важливості сигналів
-        updated_weights = current_weights.copy()
-
-        for signal_name, importance in signal_importance.items():
-            # Збільшуємо або зменшуємо вагу залежно від важливості
-            updated_weights[signal_name] = max(0.05,
-                                               min(0.5, current_weights[signal_name] + self.learning_rate * importance))
-
-        # Нормалізуємо ваги, щоб їх сума не перевищувала 1.5
-        weight_sum = sum(updated_weights.values())
-        if weight_sum > 1.5:
-            scaling_factor = 1.5 / weight_sum
-            updated_weights = {k: v * scaling_factor for k, v in updated_weights.items()}
-
-        # Зберігаємо оновлені ваги
-        self.token_weights[category] = updated_weights
-        self._save_weights()
+        # Оновлюємо локальну копію ваг
+        self.token_weights = self.weights_manager.token_weights
 
         print(
             f"Оновлено ваги для категорії {category}. Правильних: {len(correct_predictions)}, неправильних: {len(wrong_predictions)}")
 
-    def _train_ml_model(self, category):
+    def _train_ml_model_with_trainer(self, category):
         """
-        Навчання ML моделі для певної категорії токенів
+        Навчання ML моделі з використанням MLTrainer
 
         :param category: Категорія токена
         """
-        # Отримуємо записи з відомими результатами
+        # Перетворюємо дані історії в придатний для навчання формат
         labeled_entries = [e for e in self.training_history[category] if e['actual_event'] is not None]
-
         if len(labeled_entries) < self.retraining_interval:
             return
 
-        # Підготовка даних
-        X = np.array([e['features'] for e in labeled_entries])
-        y = np.array([1 if e['actual_event'] else 0 for e in labeled_entries])
+        print(f"Підготовка даних для навчання ML моделі категорії {category}...")
 
-        # Стандартизація ознак
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
+        # Створюємо DataFrame з ознаками та мітками
+        features_list = [e['features'] for e in labeled_entries]
+        labels = [1 if e['actual_event'] else 0 for e in labeled_entries]
 
-        # Розділення на тренувальні та тестові дані
-        X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.3, random_state=42)
+        # Створюємо директорію для тимчасових даних, якщо вона не існує
+        temp_dir = os.path.join(self.model_dir, "temp")
+        if not os.path.exists(temp_dir):
+            os.makedirs(temp_dir)
 
-        # Навчання моделі
-        model = GradientBoostingClassifier(n_estimators=100, learning_rate=0.1, max_depth=3, random_state=42)
-        model.fit(X_train, y_train)
+        # Зберігаємо дані у тимчасовий CSV
+        training_data = pd.DataFrame(features_list)
+        training_data['is_event'] = labels
 
-        # Оцінка моделі
-        y_pred = model.predict(X_test)
-        precision = precision_score(y_test, y_pred, zero_division=0)
-        recall = recall_score(y_test, y_pred, zero_division=0)
-        f1 = f1_score(y_test, y_pred, zero_division=0)
+        # Додаємо назви ознак для зрозумілості
+        feature_names = [
+            'volume_percent_change', 'volume_z_score', 'volume_anomaly_count', 'volume_acceleration',
+            'price_change_1h', 'price_change_24h', 'volatility_ratio', 'large_candles', 'consecutive_up',
+            'price_acceleration',
+            'buy_sell_ratio', 'top_concentration', 'spread', 'has_buy_wall', 'has_sell_wall',
+            'social_percent_change', 'social_growth_acceleration',
+            'time_risk_score', 'is_high_risk_hour', 'is_weekend',
+            'correlation_signal'
+        ]
 
-        print(f"Навчено ML модель для категорії {category}:")
-        print(f"Precision: {precision:.4f}, Recall: {recall:.4f}, F1: {f1:.4f}")
+        # Перейменовуємо колонки
+        column_mapping = {i: name for i, name in enumerate(feature_names)}
+        training_data = training_data.rename(columns=column_mapping)
 
-        # Зберігаємо модель
-        self.ml_models[category] = model
-        self._save_ml_model(category)
+        # Зберігаємо дані у тимчасовий файл
+        training_file = os.path.join(temp_dir, f"{category}_training_data.csv")
+        training_data.to_csv(training_file, index=False)
+
+        print(f"Навчання моделі для категорії {category} з {len(labeled_entries)} зразків...")
+
+        # Навчання моделі з використанням MLTrainer
+        try:
+            # Підготовка даних
+            X, y = self.ml_trainer.prepare_features(training_file)
+
+            # Спочатку спробуємо знайти оптимальні гіперпараметри
+            print(f"Оптимізація гіперпараметрів для {category}...")
+            best_params, _ = self.ml_trainer.optimize_hyperparameters(X, y, model_type='gradient_boosting',
+                                                                      category=category)
+
+            # Навчання моделі з оптимальними параметрами
+            print(f"Тренування моделі для {category} з оптимальними параметрами: {best_params}")
+            model, info = self.ml_trainer.train_model(X, y, model_type='gradient_boosting', category=category,
+                                                      **best_params)
+
+            # Зберігаємо натреновану модель
+            self.ml_models[category] = model
+            self._save_ml_model(category)
+
+            # Візуалізація важливості фічей
+            charts_dir = os.path.join(self.model_dir, "charts")
+            if not os.path.exists(charts_dir):
+                os.makedirs(charts_dir)
+
+            # Збереження графіка з важливістю фічей
+            self.ml_trainer.visualize_feature_importance(
+                info['feature_importance'],
+                title=f"Feature Importance for {category}",
+                top_n=20
+            )
+
+            # Проведення крос-валідації та звітування
+            cv_report, _ = self.ml_trainer.cross_validate_and_report(X, y, model_type='gradient_boosting',
+                                                                     category=category, **best_params)
+
+            # Збереження звіту
+            report_file = os.path.join(charts_dir, f"{category}_ml_report.json")
+            with open(report_file, 'w') as f:
+                json.dump(cv_report, f, indent=4, default=str)
+
+            print(f"Навчання ML моделі для категорії {category} завершено успішно.")
+            print(
+                f"Метрики: Precision={info['metrics']['precision']:.4f}, Recall={info['metrics']['recall']:.4f}, F1={info['metrics']['f1_score']:.4f}")
+
+        except Exception as e:
+            print(f"Помилка при навчанні ML моделі для категорії {category}: {str(e)}")
 
         # Очищаємо історію, залишаючи останні 50 записів для наступного навчання
         self.training_history[category] = self.training_history[category][-50:]
@@ -442,7 +439,7 @@ class AdaptiveCryptoDetector:
         """
         category = self._get_token_category(symbol)
 
-        # Базовий поріг
+        # Базовий поріг з налаштувань
         base_currency = symbol.split('/')[0]
         if base_currency in ['PEPE', 'SHIB', 'DOGE', 'CTT']:
             base_threshold = 0.12  # Нижчий поріг для мем-токенів
@@ -451,30 +448,17 @@ class AdaptiveCryptoDetector:
         else:
             base_threshold = 0.18  # Вищий поріг для інших токенів
 
-        # Якщо є достатньо даних, обчислюємо оптимізований поріг
-        if category in self.training_history:
-            labeled_entries = [e for e in self.training_history[category] if e['actual_event'] is not None]
+        # Спроба отримати оптимізований поріг з SignalWeightsManager
+        try:
+            # Якщо є достатньо даних, використовуємо SignalWeightsManager для пошуку оптимального порогу
+            if category in self.training_history:
+                labeled_entries = [e for e in self.training_history[category] if e['actual_event'] is not None]
+                if len(labeled_entries) >= 30:
+                    return self.weights_manager.find_optimal_threshold(labeled_entries, category)[0]
+        except Exception as e:
+            print(f"Помилка при пошуку оптимального порогу: {str(e)}")
 
-            if len(labeled_entries) >= 30:
-                # Використовуємо F1-score для пошуку оптимального порогу
-                thresholds = np.linspace(0.1, 0.5, 41)  # Від 0.1 до 0.5 з кроком 0.01
-                best_f1 = 0
-                best_threshold = base_threshold
-
-                for threshold in thresholds:
-                    y_true = [1 if e['actual_event'] else 0 for e in labeled_entries]
-                    y_pred = [1 if e['probability'] > threshold else 0 for e in labeled_entries]
-
-                    if sum(y_pred) > 0:  # Переконуємося, що є хоча б одне позитивне передбачення
-                        f1 = f1_score(y_true, y_pred, zero_division=0)
-
-                        if f1 > best_f1:
-                            best_f1 = f1
-                            best_threshold = threshold
-
-                return best_threshold
-
-        # Якщо не можемо обчислити оптимізований поріг, повертаємо базовий
+        # Якщо не вдалося отримати оптимізований поріг, повертаємо базовий
         return base_threshold
 
     async def analyze_historical_point(self, symbol, data_window, timestamp):
@@ -530,7 +514,7 @@ class AdaptiveCryptoDetector:
         signals = []
         confidence = 0.0
 
-        # Отримуємо оптимізовані ваги
+        # Отримуємо оптимізовані ваги через SignalWeightsManager
         weights = self.get_weights_for_token(symbol)
 
         # Сигнал 1: Аномальний обсяг торгів
@@ -589,3 +573,290 @@ class AdaptiveCryptoDetector:
         }
 
         return result
+
+    def evaluate_model_performance(self, category, test_data=None):
+        """
+        Оцінка ефективності моделі для заданої категорії
+
+        :param category: Категорія токена
+        :param test_data: Тестові дані (якщо None, використовується remaining_history)
+        :return: Метрики ефективності
+        """
+        if category not in self.ml_models:
+            print(f"Немає моделі для категорії {category}")
+            return None
+
+        # Використання тестових даних або останніх записів з історії
+        if test_data is None:
+            labeled_entries = [e for e in self.training_history.get(category, []) if e['actual_event'] is not None]
+            if len(labeled_entries) < 10:
+                print(f"Недостатньо даних для оцінки моделі категорії {category}")
+                return None
+
+            # Використовуємо останні 20% записів як тестові дані
+            split_idx = int(len(labeled_entries) * 0.8)
+            test_entries = labeled_entries[split_idx:]
+
+            features = [e['features'] for e in test_entries]
+            true_labels = [1 if e['actual_event'] else 0 for e in test_entries]
+        else:
+            # Якщо надані тестові дані, використовуємо їх
+            try:
+                X, y = self.ml_trainer.prepare_features(test_data)
+                features = X
+                true_labels = y
+            except Exception as e:
+                print(f"Помилка при підготовці тестових даних: {str(e)}")
+                return None
+
+        # Отримання передбачень моделі
+        model = self.ml_models[category]
+
+        try:
+            # Отримання ймовірностей та передбачень
+            probabilities = model.predict_proba(features)[:, 1]
+
+            # Використання оптимального порогу
+            optimal_threshold = self.weights_manager.find_optimal_threshold(
+                self.training_history.get(category, []), category)[0]
+
+            # Якщо не вдалося отримати оптимальний поріг, використовуємо стандартний
+            if not optimal_threshold:
+                optimal_threshold = 0.5
+
+            predictions = [1 if p > optimal_threshold else 0 for p in probabilities]
+
+            # Розрахунок метрик
+            precision = precision_score(true_labels, predictions, zero_division=0)
+            recall = recall_score(true_labels, predictions, zero_division=0)
+            f1 = f1_score(true_labels, predictions, zero_division=0)
+
+            # Формування результату
+            metrics = {
+                'precision': precision,
+                'recall': recall,
+                'f1_score': f1,
+                'optimal_threshold': optimal_threshold,
+                'sample_size': len(true_labels)
+            }
+
+            print(f"Оцінка ефективності моделі для категорії {category}:")
+            print(f"  Precision: {precision:.4f}")
+            print(f"  Recall: {recall:.4f}")
+            print(f"  F1 Score: {f1:.4f}")
+            print(f"  Оптимальний поріг: {optimal_threshold:.4f}")
+            print(f"  Розмір вибірки: {len(true_labels)}")
+
+            return metrics
+
+        except Exception as e:
+            print(f"Помилка при оцінці ефективності моделі: {str(e)}")
+            return None
+
+    def visualize_weights_and_signal_importance(self, category):
+        """
+        Візуалізація ваг сигналів та їх важливості для заданої категорії
+
+        :param category: Категорія токена
+        """
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+
+        if category not in self.token_weights:
+            print(f"Немає оптимізованих ваг для категорії {category}")
+            return
+
+        # Отримання ваг для категорії
+        optimized_weights = self.token_weights[category]
+        default_weights = self.default_weights
+
+        # Створення DataFrame для візуалізації
+        weights_df = pd.DataFrame({
+            'Signal': list(optimized_weights.keys()),
+            'Default Weight': [default_weights.get(s, 0) for s in optimized_weights.keys()],
+            'Optimized Weight': list(optimized_weights.values())
+        })
+
+        # Сортування за зміною ваги
+        weights_df['Weight Change'] = weights_df['Optimized Weight'] - weights_df['Default Weight']
+        weights_df = weights_df.sort_values('Weight Change', ascending=False)
+
+        # Створення директорії для графіків, якщо вона не існує
+        charts_dir = os.path.join(self.model_dir, "charts")
+        if not os.path.exists(charts_dir):
+            os.makedirs(charts_dir)
+
+        # Візуалізація порівняння ваг
+        plt.figure(figsize=(12, 8))
+
+        sns.barplot(x='Signal', y='value', hue='variable',
+                    data=pd.melt(weights_df, id_vars=['Signal'],
+                                 value_vars=['Default Weight', 'Optimized Weight']))
+
+        plt.title(f'Порівняння ваг сигналів для категорії {category}')
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+
+        # Збереження графіка
+        plt.savefig(os.path.join(charts_dir, f"{category}_weights_comparison.png"))
+        plt.close()
+
+        # Якщо є ML модель, візуалізуємо також важливість ознак
+        if category in self.ml_models and hasattr(self.ml_models[category], 'feature_importances_'):
+            # Отримання важливості ознак
+            feature_names = [
+                'volume_percent_change', 'volume_z_score', 'volume_anomaly_count', 'volume_acceleration',
+                'price_change_1h', 'price_change_24h', 'volatility_ratio', 'large_candles', 'consecutive_up',
+                'price_acceleration',
+                'buy_sell_ratio', 'top_concentration', 'spread', 'has_buy_wall', 'has_sell_wall',
+                'social_percent_change', 'social_growth_acceleration',
+                'time_risk_score', 'is_high_risk_hour', 'is_weekend',
+                'correlation_signal'
+            ]
+
+            feature_importances = self.ml_models[category].feature_importances_
+
+            # Створення DataFrame для візуалізації
+            importance_df = pd.DataFrame({
+                'Feature': feature_names[:len(feature_importances)],
+                'Importance': feature_importances
+            })
+
+            # Сортування за важливістю
+            importance_df = importance_df.sort_values('Importance', ascending=False)
+
+            # Візуалізація важливості ознак
+            plt.figure(figsize=(12, 8))
+
+            sns.barplot(x='Importance', y='Feature', data=importance_df)
+
+            plt.title(f'Важливість ознак для категорії {category}')
+            plt.tight_layout()
+
+            # Збереження графіка
+            plt.savefig(os.path.join(charts_dir, f"{category}_feature_importance.png"))
+            plt.close()
+
+            print(f"Графіки збережено у директорії {charts_dir}")
+
+    def export_trained_model(self, category, export_dir=None):
+        """
+        Експорт натренованої моделі для використання в інших системах
+
+        :param category: Категорія токена
+        :param export_dir: Директорія для експорту (якщо None, використовується model_dir/export)
+        :return: Шлях до експортованого файлу
+        """
+        if category not in self.ml_models:
+            print(f"Немає моделі для категорії {category}")
+            return None
+
+        # Визначення директорії для експорту
+        if export_dir is None:
+            export_dir = os.path.join(self.model_dir, "export")
+
+        # Створення директорії, якщо вона не існує
+        if not os.path.exists(export_dir):
+            os.makedirs(export_dir)
+
+        try:
+            # Експорт моделі
+            model_path = os.path.join(export_dir, f"{category}_model.pkl")
+            joblib.dump(self.ml_models[category], model_path)
+
+            # Експорт ваг сигналів
+            weights_path = os.path.join(export_dir, f"{category}_weights.json")
+            with open(weights_path, 'w') as f:
+                json.dump(self.token_weights.get(category, self.default_weights), f, indent=4)
+
+            # Експорт метаданих
+            metadata = {
+                'category': category,
+                'date_exported': datetime.now().isoformat(),
+                'model_type': type(self.ml_models[category]).__name__,
+                'feature_names': [
+                    'volume_percent_change', 'volume_z_score', 'volume_anomaly_count', 'volume_acceleration',
+                    'price_change_1h', 'price_change_24h', 'volatility_ratio', 'large_candles', 'consecutive_up',
+                    'price_acceleration',
+                    'buy_sell_ratio', 'top_concentration', 'spread', 'has_buy_wall', 'has_sell_wall',
+                    'social_percent_change', 'social_growth_acceleration',
+                    'time_risk_score', 'is_high_risk_hour', 'is_weekend',
+                    'correlation_signal'
+                ],
+                'threshold': self.get_optimized_threshold(
+                    f"{list(self.token_categories.get(category, ['BTC']))[0]}/USDT")
+            }
+
+            metadata_path = os.path.join(export_dir, f"{category}_metadata.json")
+            with open(metadata_path, 'w') as f:
+                json.dump(metadata, f, indent=4)
+
+            print(f"Модель для категорії {category} успішно експортовано у {export_dir}")
+
+            return {
+                'model': model_path,
+                'weights': weights_path,
+                'metadata': metadata_path
+            }
+
+        except Exception as e:
+            print(f"Помилка при експорті моделі: {str(e)}")
+            return None
+
+    def import_trained_model(self, category, import_dir):
+        """
+        Імпорт натренованої моделі з зовнішнього джерела
+
+        :param category: Категорія токена
+        :param import_dir: Директорія з імпортованими файлами
+        :return: True в разі успіху, False в разі помилки
+        """
+        # Перевірка наявності файлів для імпорту
+        model_path = os.path.join(import_dir, f"{category}_model.pkl")
+        weights_path = os.path.join(import_dir, f"{category}_weights.json")
+
+        if not os.path.exists(model_path) or not os.path.exists(weights_path):
+            print(f"Не знайдено необхідні файли для імпорту моделі категорії {category}")
+            return False
+
+        try:
+            # Імпорт моделі
+            model = joblib.load(model_path)
+            self.ml_models[category] = model
+
+            # Імпорт ваг сигналів
+            with open(weights_path, 'r') as f:
+                weights = json.load(f)
+
+            self.token_weights[category] = weights
+
+            # Збереження моделі та ваг у відповідні директорії
+            self._save_ml_model(category)
+            self.weights_manager.token_weights = self.token_weights
+            if hasattr(self.weights_manager, 'save_weights'):
+                self.weights_manager.save_weights()
+
+            print(f"Модель для категорії {category} успішно імпортовано")
+            return True
+
+        except Exception as e:
+            print(f"Помилка при імпорті моделі: {str(e)}")
+            return False
+
+    def get_all_models_metrics(self):
+        """
+        Отримання метрик для всіх натренованих моделей
+
+        :return: Словник з метриками для кожної категорії
+        """
+        metrics = {}
+
+        for category in self.ml_models.keys():
+            try:
+                category_metrics = self.evaluate_model_performance(category)
+                if category_metrics:
+                    metrics[category] = category_metrics
+            except Exception as e:
+                print(f"Помилка при оцінці моделі категорії {category}: {str(e)}")
+
+        return metrics

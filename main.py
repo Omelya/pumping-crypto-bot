@@ -51,16 +51,35 @@ async def run_backtest(args):
 
     # Запуск адаптивного бектестингу
     if args.symbol == "all":
-        # Якщо потрібно тестувати багато символів
         symbols = [
+            'SOL/USDT',
+            'PEPE/USDT',
             'BTC/USDT',
             'ETH/USDT',
             'BNB/USDT',
-            'SOL/USDT',
             'AVAX/USDT',
-            'PEPE/USDT',
-            'DOGE/USDT',
-            'CTT/USDT'
+            'DOGE / USDT',
+            'CTT/USDT',
+            '1000APUSDT',
+            'A8/USDT',
+            'ADA/USDT',
+            'ALGO/USDT',
+            'AUCTIONUSDT'
+            'CAKE/USDT',
+            'DOT/USDT',
+            'GALA/USDT',
+            'LAI/USDT',
+            '1000XUSDT',
+            'MAVIA/USDT',
+            'MKR/USDT',
+            'NOT/USDT',
+            'SHIB/USDT',
+            'SUI/USDT',
+            'TON/USDT',
+            'TRX/USDT',
+            'XLM/USDT',
+            'XRP/USDT',
+            'YFI/USDT',
         ]
 
         if args.symbols_file and os.path.exists(args.symbols_file):
@@ -102,6 +121,15 @@ async def run_backtest(args):
             backtester.save_comparative_results(args.output)
             logger.info(f"Результати збережено у {args.output}")
 
+    # Навчання ML моделей, якщо вказано
+    if args.train_ml:
+        logger.info("Запуск навчання ML моделей на основі результатів бектестингу...")
+        try:
+            backtester.train_all_ml_models()
+            logger.info("Навчання ML моделей завершено успішно.")
+        except Exception as e:
+            logger.error(f"Помилка при навчанні ML моделей: {str(e)}")
+
     return results
 
 
@@ -131,7 +159,7 @@ async def run_monitor(args):
 
     if args.symbol == "all":
         # Отримання всіх доступних символів від біржі
-        all_symbols = await detector.exchange_client.fetch_available_symbols()
+        all_symbols = await detector.fetch_available_symbols()
         # Фільтрація для отримання тільки USDT пар
         symbols_to_monitor = [s for s in all_symbols if s.endswith('/USDT')]
     elif args.symbols_file and os.path.exists(args.symbols_file):
@@ -184,6 +212,34 @@ async def run_monitor(args):
         logger.info(f"Пауза {args.interval} секунд...")
         await asyncio.sleep(args.interval)
 
+async def run_train(args):
+    """
+    Запуск режиму навчання ML моделей
+
+    :param args: Параметри командного рядка
+    """
+    logger.info("Запуск режиму навчання ML моделей")
+
+    # Ініціалізація детектора
+    detector = CryptoActivityDetector(
+        exchange_id='binance',
+        threshold_multiplier=2.0,
+        lookback_period=24
+    )
+
+    # Ініціалізація адаптивного детектора
+    adaptive_detector = AdaptiveCryptoDetector(detector, model_dir=os.path.join(args.data_dir, "models"))
+
+    # Ініціалізація бектестера для використання його методу train_all_ml_models
+    backtester = AdaptiveBacktester(detector, data_dir=args.data_dir)
+    backtester.adaptive_detector = adaptive_detector
+
+    try:
+        # Запуск навчання всіх моделей
+        backtester.train_all_ml_models()
+        logger.info("Навчання ML моделей завершено успішно.")
+    except Exception as e:
+        logger.error(f"Помилка при навчанні ML моделей: {str(e)}")
 
 async def main():
     """
@@ -215,6 +271,7 @@ async def main():
     backtest_parser.add_argument('--output', type=str, default='backtest_results.json',
                                  help='Файл для збереження результатів')
     backtest_parser.add_argument('--visualize', action='store_true', help='Візуалізувати результати')
+    backtest_parser.add_argument('--train-ml', action='store_true', help='Тренувати ML моделі після бектестингу')
 
     # Налаштування для режиму моніторингу
     monitor_parser = subparsers.add_parser('monitor', help='Режим онлайн-моніторингу криптовалютних ринків')
@@ -223,6 +280,17 @@ async def main():
     monitor_parser.add_argument('--adaptive', action='store_true', help='Використовувати адаптивний детектор')
     monitor_parser.add_argument('--alert-threshold', type=float, default=0.35, help='Поріг для створення сповіщень')
     monitor_parser.add_argument('--output-dir', type=str, default='alerts', help='Директорія для збереження сповіщень')
+
+    # Додамо новий режим для окремого тренування ML моделей
+    train_parser = subparsers.add_parser('train', help='Режим навчання ML моделей')
+    train_parser.add_argument('--data-dir', type=str, default='historical_data',
+                              help='Директорія з даними для навчання')
+    train_parser.add_argument('--symbols-file', type=str, help='Файл зі списком символів для навчання')
+    train_parser.add_argument('--visualize', action='store_true', help='Візуалізувати результати навчання')
+    train_parser.add_argument('--model-type', type=str, default='gradient_boosting',
+                              choices=['gradient_boosting', 'random_forest'],
+                              help='Тип ML моделі для навчання')
+
     args = parser.parse_args()
 
     # Створення директорій для виведення, якщо вони не існують
@@ -234,9 +302,10 @@ async def main():
         await run_backtest(args)
     elif args.mode == 'monitor':
         await run_monitor(args)
+    elif args.mode == 'train':
+        await run_train(args)
     else:
         parser.print_help()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
