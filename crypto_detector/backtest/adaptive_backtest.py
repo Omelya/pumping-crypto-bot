@@ -488,7 +488,50 @@ class AdaptiveBacktester(CryptoBacktester):
             print("MLTrainer не ініціалізовано в адаптивному детекторі.")
             return
 
-        # Діагностика проблемних даних
+        try:
+            # Підготовка даних
+            raw_data = self._load_and_preprocess_data(ml_data_path)
+            if raw_data is None:
+                return
+
+            # Підготовка фіч для навчання моделі
+            X, y = self._prepare_features(raw_data, ml_data_path)
+            if X is None or len(X) < 30:
+                print(
+                    f"Недостатньо даних для навчання моделі: {len(X) if X is not None else 0} зразків. Потрібно мінімум 30.")
+                return
+
+            # Оптимізація гіперпараметрів
+            best_params = self._optimize_hyperparameters(X, y, category)
+
+            # Навчання моделі з оптимальними параметрами
+            model, model_info = self._train_and_save_model(X, y, category, best_params)
+            if model is None:
+                return
+
+            # Візуалізація результатів навчання
+            charts_dir = self._create_charts_directory()
+            self._visualize_and_save_feature_importance(model_info, category, symbol, charts_dir)
+
+            # Оцінка моделі через крос-валідацію
+            self._perform_cross_validation(X, y, category, best_params, symbol, charts_dir)
+
+            # Виведення метрик моделі
+            self._log_model_metrics(model_info, category)
+
+            # Пошук оптимального порогу та оновлення ваг
+            self._optimize_threshold_and_update_weights(model, X, y, category, symbol, charts_dir, raw_data)
+
+        except Exception as e:
+            print(f"Загальна помилка при навчанні моделі для {category}: {str(e)}")
+
+    def _load_and_preprocess_data(self, ml_data_path):
+        """
+        Завантаження та попередня обробка даних
+
+        :param ml_data_path: Шлях до файлу з даними
+        :return: Підготовлені дані або None у випадку помилки
+        """
         try:
             print(f"\nДіагностика даних у файлі {ml_data_path}")
             raw_data = pd.read_csv(ml_data_path)
@@ -497,118 +540,287 @@ class AdaptiveBacktester(CryptoBacktester):
 
             # Попередня обробка даних
             preprocessed_file = ml_data_path.replace('.csv', '_preprocessed.csv')
-
-            # Видаляємо рядкові колонки з сигналами або зберігаємо у тому ж вигляді
-            # MLTrainer тепер сам визначить, що робити з цими колонками
             raw_data.to_csv(preprocessed_file, index=False)
             print(f"Збережено дані для навчання у {preprocessed_file}")
 
-            # Підготовка даних для навчання через оновлений MLTrainer
+            return raw_data
+        except Exception as e:
+            print(f"Помилка при завантаженні та обробці даних: {str(e)}")
+            return None
+
+    def _prepare_features(self, raw_data, ml_data_path):
+        """
+        Підготовка фіч для навчання моделі
+
+        :param raw_data: Завантажені дані
+        :param ml_data_path: Шлях до файлу з даними
+        :return: Кортеж (X, y) підготовлених фіч та міток або (None, None) у випадку помилки
+        """
+        try:
+            preprocessed_file = ml_data_path.replace('.csv', '_preprocessed.csv')
             print("Передаємо дані в MLTrainer для обробки...")
             X, y = self.adaptive_detector.ml_trainer.prepare_features(preprocessed_file)
-
-            if len(X) < 30:
-                print(f"Недостатньо даних для навчання моделі: {len(X)} зразків. Потрібно мінімум 30.")
-                return
-
             print(f"Підготовлено {len(X)} зразків для навчання.")
-
-            # Оптимізація гіперпараметрів з обробкою помилок
-            print(f"Оптимізація гіперпараметрів для категорії {category}...")
-            try:
-                best_params, _ = self.adaptive_detector.ml_trainer.optimize_hyperparameters(
-                    X, y, model_type='gradient_boosting', category=category
-                )
-                print(f"Оптимальні гіперпараметри для {category}: {best_params}")
-            except Exception as e:
-                print(f"Помилка при оптимізації гіперпараметрів: {str(e)}")
-                best_params = {
-                    'n_estimators': 100,
-                    'learning_rate': 0.1,
-                    'max_depth': 3
-                }
-                print(f"Використовуємо стандартні гіперпараметри: {best_params}")
-
-            # Навчання моделі з оптимальними параметрами
-            print(f"Навчання моделі для {category}...")
-            try:
-                model, model_info = self.adaptive_detector.ml_trainer.train_model(
-                    X, y, model_type='gradient_boosting', category=category, **best_params
-                )
-
-                # Збереження моделі в адаптивному детекторі
-                self.adaptive_detector.ml_models[category] = model
-
-                # Збереження моделі на диск
-                if hasattr(self.adaptive_detector, '_save_ml_model'):
-                    self.adaptive_detector._save_ml_model(category)
-
-                # Створення директорії для графіків, якщо вона не існує
-                charts_dir = os.path.join(self.data_dir, "charts", "ml_models")
-                if not os.path.exists(charts_dir):
-                    os.makedirs(charts_dir)
-
-                # Збереження графіка важливості фічей
-                try:
-                    import matplotlib.pyplot as plt
-
-                    # Візуалізація важливості фічей
-                    self.adaptive_detector.ml_trainer.visualize_feature_importance(
-                        model_info['feature_importance'],
-                        title=f"Важливість ознак для категорії {category}",
-                        top_n=20
-                    )
-
-                    # Збереження графіка
-                    chart_path = os.path.join(charts_dir, f"{symbol.replace('/', '_')}_feature_importance.png")
-                    plt.savefig(chart_path)
-                    plt.close()
-
-                    print(f"Графік важливості ознак збережено у {chart_path}")
-                except Exception as e:
-                    print(f"Помилка при створенні графіка важливості ознак: {str(e)}")
-
-                # Оцінка моделі через крос-валідацію
-                try:
-                    cv_report, _ = self.adaptive_detector.ml_trainer.cross_validate_and_report(
-                        X, y, model_type='gradient_boosting', category=category, **best_params
-                    )
-
-                    # Збереження звіту про крос-валідацію
-                    report_file = os.path.join(charts_dir, f"{symbol.replace('/', '_')}_cv_report.json")
-                    import json
-                    with open(report_file, 'w') as f:
-                        json.dump(cv_report, f, indent=4, default=str)
-
-                    print(f"Звіт про крос-валідацію збережено у {report_file}")
-                except Exception as e:
-                    print(f"Помилка при крос-валідації: {str(e)}")
-
-                # Виведення метрик моделі
-                print(f"Метрики моделі для {category}:")
-                print(f"  Precision: {model_info['metrics']['precision']:.4f}")
-                print(f"  Recall: {model_info['metrics']['recall']:.4f}")
-                print(f"  F1 Score: {model_info['metrics']['f1_score']:.4f}")
-
-                # Пошук оптимального порогу для класифікації
-                try:
-                    y_prob = model.predict_proba(X)[:, 1]
-                    optimal_threshold, _ = self.adaptive_detector.ml_trainer.plot_threshold_optimization(
-                        y, y_prob, metric='f1', title=f"Оптимізація порогу для {category}"
-                    )
-
-                    # Збереження графіка оптимізації порогу
-                    chart_path = os.path.join(charts_dir, f"{symbol.replace('/', '_')}_threshold_optimization.png")
-                    plt.savefig(chart_path)
-                    plt.close()
-
-                    print(f"Оптимальний поріг для {category}: {optimal_threshold:.4f}")
-                except Exception as e:
-                    print(f"Помилка при оптимізації порогу: {str(e)}")
-
-            except Exception as e:
-                print(f"Помилка при навчанні моделі для {category}: {str(e)}")
-                raise
-
+            return X, y
         except Exception as e:
-            print(f"Загальна помилка при навчанні моделі для {category}: {str(e)}")
+            print(f"Помилка при підготовці фіч: {str(e)}")
+            return None, None
+
+    def _optimize_hyperparameters(self, X, y, category):
+        """
+        Оптимізація гіперпараметрів для моделі
+
+        :param X: Підготовлені фічі
+        :param y: Мітки класів
+        :param category: Категорія токена
+        :return: Словник оптимальних гіперпараметрів
+        """
+        print(f"Оптимізація гіперпараметрів для категорії {category}...")
+        try:
+            best_params, _ = self.adaptive_detector.ml_trainer.optimize_hyperparameters(
+                X, y, model_type='gradient_boosting', category=category
+            )
+            print(f"Оптимальні гіперпараметри для {category}: {best_params}")
+            return best_params
+        except Exception as e:
+            print(f"Помилка при оптимізації гіперпараметрів: {str(e)}")
+            default_params = {
+                'n_estimators': 100,
+                'learning_rate': 0.1,
+                'max_depth': 3
+            }
+            print(f"Використовуємо стандартні гіперпараметри: {default_params}")
+            return default_params
+
+    def _train_and_save_model(self, X, y, category, best_params):
+        """
+        Навчання моделі з оптимальними параметрами та збереження
+
+        :param X: Підготовлені фічі
+        :param y: Мітки класів
+        :param category: Категорія токена
+        :param best_params: Оптимальні гіперпараметри
+        :return: Кортеж (модель, інформація про модель) або (None, None) у випадку помилки
+        """
+        print(f"Навчання моделі для {category}...")
+        try:
+            model, model_info = self.adaptive_detector.ml_trainer.train_model(
+                X, y, model_type='gradient_boosting', category=category, **best_params
+            )
+
+            # Збереження моделі в адаптивному детекторі
+            self.adaptive_detector.ml_models[category] = model
+
+            # Збереження моделі на диск
+            if hasattr(self.adaptive_detector, '_save_ml_model'):
+                self.adaptive_detector._save_ml_model(category)
+
+            return model, model_info
+        except Exception as e:
+            print(f"Помилка при навчанні моделі для {category}: {str(e)}")
+            return None, None
+
+    def _create_charts_directory(self):
+        """
+        Створення директорії для графіків
+
+        :return: Шлях до директорії з графіками
+        """
+        charts_dir = os.path.join(self.data_dir, "charts", "ml_models")
+        if not os.path.exists(charts_dir):
+            os.makedirs(charts_dir)
+        return charts_dir
+
+    def _visualize_and_save_feature_importance(self, model_info, category, symbol, charts_dir):
+        """
+        Візуалізація та збереження графіка важливості фічей
+
+        :param model_info: Інформація про навчену модель
+        :param category: Категорія токена
+        :param symbol: Символ криптовалюти
+        :param charts_dir: Шлях до директорії з графіками
+        """
+        try:
+            import matplotlib.pyplot as plt
+
+            # Візуалізація важливості фічей
+            self.adaptive_detector.ml_trainer.visualize_feature_importance(
+                model_info['feature_importance'],
+                title=f"Важливість ознак для категорії {category}",
+                top_n=20
+            )
+
+            # Збереження графіка
+            chart_path = os.path.join(charts_dir, f"{symbol.replace('/', '_')}_feature_importance.png")
+            plt.savefig(chart_path)
+            plt.close()
+
+            print(f"Графік важливості ознак збережено у {chart_path}")
+        except Exception as e:
+            print(f"Помилка при створенні графіка важливості ознак: {str(e)}")
+
+    def _perform_cross_validation(self, X, y, category, best_params, symbol, charts_dir):
+        """
+        Виконання крос-валідації та збереження звіту
+
+        :param X: Підготовлені фічі
+        :param y: Мітки класів
+        :param category: Категорія токена
+        :param best_params: Оптимальні гіперпараметри
+        :param symbol: Символ криптовалюти
+        :param charts_dir: Шлях до директорії з графіками
+        """
+        try:
+            cv_report, _ = self.adaptive_detector.ml_trainer.cross_validate_and_report(
+                X, y, model_type='gradient_boosting', category=category, **best_params
+            )
+
+            # Збереження звіту про крос-валідацію
+            report_file = os.path.join(charts_dir, f"{symbol.replace('/', '_')}_cv_report.json")
+            import json
+            with open(report_file, 'w') as f:
+                json.dump(cv_report, f, indent=4, default=str)
+
+            print(f"Звіт про крос-валідацію збережено у {report_file}")
+        except Exception as e:
+            print(f"Помилка при крос-валідації: {str(e)}")
+
+    def _log_model_metrics(self, model_info, category):
+        """
+        Виведення метрик навченої моделі
+
+        :param model_info: Інформація про навчену модель
+        :param category: Категорія токена
+        """
+        print(f"Метрики моделі для {category}:")
+        print(f"  Precision: {model_info['metrics']['precision']:.4f}")
+        print(f"  Recall: {model_info['metrics']['recall']:.4f}")
+        print(f"  F1 Score: {model_info['metrics']['f1_score']:.4f}")
+
+    def _optimize_threshold_and_update_weights(self, model, X, y, category, symbol, charts_dir, raw_data):
+        """
+        Пошук оптимального порогу та оновлення ваг сигналів
+
+        :param model: Навчена модель
+        :param X: Підготовлені фічі
+        :param y: Мітки класів
+        :param category: Категорія токена
+        :param symbol: Символ криптовалюти
+        :param charts_dir: Шлях до директорії з графіками
+        :param raw_data: Початкові дані
+        """
+        try:
+            # Пошук оптимального порогу
+            optimal_threshold = self._find_optimal_threshold(model, X, y, category, symbol, charts_dir)
+
+            # Підготовка даних для оновлення ваг
+            correct_predictions, wrong_predictions = self._prepare_data_for_weights_update(
+                model, X, y, raw_data, optimal_threshold
+            )
+
+            # Оновлення ваг сигналів
+            self._update_signal_weights(category, correct_predictions, wrong_predictions)
+        except Exception as e:
+            print(f"Помилка при оптимізації порогу та оновленні ваг: {str(e)}")
+
+    def _find_optimal_threshold(self, model, X, y, category, symbol, charts_dir):
+        """
+        Пошук оптимального порогу для класифікації
+
+        :param model: Навчена модель
+        :param X: Підготовлені фічі
+        :param y: Мітки класів
+        :param category: Категорія токена
+        :param symbol: Символ криптовалюти
+        :param charts_dir: Шлях до директорії з графіками
+        :return: Оптимальний поріг
+        """
+        try:
+            import matplotlib.pyplot as plt
+
+            y_prob = model.predict_proba(X)[:, 1]
+            optimal_threshold, _ = self.adaptive_detector.ml_trainer.plot_threshold_optimization(
+                y, y_prob, metric='f1', title=f"Оптимізація порогу для {category}"
+            )
+
+            # Збереження графіка оптимізації порогу
+            chart_path = os.path.join(charts_dir, f"{symbol.replace('/', '_')}_threshold_optimization.png")
+            plt.savefig(chart_path)
+            plt.close()
+
+            print(f"Оптимальний поріг для {category}: {optimal_threshold:.4f}")
+            return optimal_threshold
+        except Exception as e:
+            print(f"Помилка при оптимізації порогу: {str(e)}")
+            return 0.5  # Повертаємо стандартний поріг
+
+    def _prepare_data_for_weights_update(self, model, X, y, raw_data, threshold=0.5):
+        """
+        Підготовка даних для оновлення ваг сигналів
+
+        :param model: Навчена модель
+        :param X: Підготовлені фічі
+        :param y: Мітки класів
+        :param raw_data: Початкові дані
+        :param threshold: Поріг для класифікації
+        :return: Кортеж (правильні передбачення, неправильні передбачення)
+        """
+        print(f"Підготовка даних для оновлення ваг сигналів...")
+        try:
+            y_pred_prob = model.predict_proba(X)[:, 1]
+
+            # Переконаємось, що y_pred_prob - це numpy масив
+            if not isinstance(y_pred_prob, np.ndarray):
+                y_pred_prob = np.array(y_pred_prob)
+
+            # Отримуємо передбачення моделі
+            y_pred = (y_pred_prob > threshold).astype(int)
+
+            # Створюємо дані для оновлення ваг
+            labeled_entries = []
+            for i, (features, true_label, pred_prob) in enumerate(zip(X, y, y_pred_prob)):
+                # Завантажуємо оригінальний рядок з даних
+                orig_row = raw_data.iloc[i].to_dict() if i < len(raw_data) else {}
+
+                entry = {
+                    'probability': pred_prob,
+                    'actual_event': bool(true_label),
+                    'signals': orig_row.get('signals', {})
+                }
+                labeled_entries.append(entry)
+
+            # Розділення на правильні та неправильні передбачення
+            correct_predictions = [entry for i, entry in enumerate(labeled_entries) if y_pred[i] == y[i]]
+            wrong_predictions = [entry for i, entry in enumerate(labeled_entries) if y_pred[i] != y[i]]
+
+            print(
+                f"Підготовлено {len(correct_predictions)} правильних та {len(wrong_predictions)} неправильних передбачень")
+            return correct_predictions, wrong_predictions
+        except Exception as e:
+            print(f"Помилка при підготовці даних для оновлення ваг: {str(e)}")
+            return [], []
+
+    def _update_signal_weights(self, category, correct_predictions, wrong_predictions):
+        """
+        Оновлення ваг сигналів на основі правильних та неправильних передбачень
+
+        :param category: Категорія токена
+        :param correct_predictions: Список правильних передбачень
+        :param wrong_predictions: Список неправильних передбачень
+        """
+        # Якщо є дані для оновлення
+        if correct_predictions and wrong_predictions:
+            print(f"Оновлення ваг сигналів для категорії {category}...")
+            try:
+                # Оновлюємо ваги через SignalWeightsManager
+                updated_weights = self.adaptive_detector.weights_manager.update_weights(
+                    category, correct_predictions, wrong_predictions
+                )
+
+                # Явно зберігаємо ваги
+                self.adaptive_detector.weights_manager.save_weights()
+                print(f"Ваги сигналів успішно оновлено та збережено для категорії {category}")
+            except Exception as e:
+                print(f"Помилка при оновленні ваг сигналів: {str(e)}")
+        else:
+            print("Недостатньо даних для оновлення ваг сигналів")
