@@ -31,6 +31,27 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 
+def get_alert_threshold_for_symbol(symbol):
+    """
+    Визначення порогу тривоги для конкретного символу на основі категорії токена
+
+    :param symbol: Символ криптовалюти
+    :return: Поріг тривоги для цього символу
+    """
+    from crypto_detector.config.settings import TOKEN_THRESHOLDS, TOKEN_CATEGORIES
+
+    base_currency = symbol.split('/')[0]
+
+    # Визначення категорії токена
+    category = 'other'  # За замовчуванням
+    for cat, tokens in TOKEN_CATEGORIES.items():
+        if base_currency in tokens:
+            category = cat
+            break
+
+    # Повернення порогу з налаштувань
+    return TOKEN_THRESHOLDS.get(category, TOKEN_THRESHOLDS['other'])
+
 async def run_backtest(args):
     """
     Запуск бектестингу на історичних даних
@@ -64,8 +85,8 @@ async def run_backtest(args):
             'A8/USDT',
             'ADA/USDT',
             'ALGO/USDT',
-            'AUCTIONUSDT'
-            'CAKE/USDT',
+            # 'AUCTIONUSDT',
+            # 'CAKE/USDT',
             'DOT/USDT',
             'GALA/USDT',
             'LAI/USDT',
@@ -80,6 +101,12 @@ async def run_backtest(args):
             'XLM/USDT',
             'XRP/USDT',
             'YFI/USDT',
+            'LINK/USDT',
+            'BAND/USDT',
+            'NMR/USDT',
+            'FET/USDT',
+            'CRO/USDT',
+            'KCS/USDT',
         ]
 
         if args.symbols_file and os.path.exists(args.symbols_file):
@@ -180,13 +207,16 @@ async def run_monitor(args):
 
         for symbol in symbols_to_monitor:
             try:
+                # Отримати динамічний поріг для конкретної монети
+                dynamic_threshold = get_alert_threshold_for_symbol(symbol)
+
                 # Аналіз символу
                 result = await detector.analyze_token(symbol, symbols_to_monitor)
 
-                # Перевірка ймовірності pump-and-dump схеми
-                if result['probability_score'] > args.alert_threshold:
+                # Перевірка ймовірності з динамічним порогом
+                if result['probability_score'] > dynamic_threshold:
                     logger.warning(f"ТРИВОГА! Виявлено підозрілу активність для {symbol}!")
-                    logger.warning(f"Ймовірність: {result['probability_score']:.2f}, Сигнали: {len(result['signals'])}")
+                    logger.warning(f"Ймовірність: {result['probability_score']:.2f}, Поріг: {dynamic_threshold:.2f}")
 
                     # Запис детальної інформації
                     alert_file = os.path.join(args.output_dir,
@@ -195,14 +225,14 @@ async def run_monitor(args):
                         import json
                         json.dump(result, f, indent=4, default=str)
 
-                    logger.info(f"Деталі тривоги збережено у {alert_file}")
-                elif result['probability_score'] > args.alert_threshold * 0.7:
+                elif result['probability_score'] > dynamic_threshold * 0.8:  # 80% від порогу
                     # Помірний рівень ризику
                     logger.info(
-                        f"Увага: підвищена активність для {symbol}, ймовірність: {result['probability_score']:.2f}")
+                        f"Увага: підвищена активність для {symbol}, ймовірність: {result['probability_score']:.2f}, поріг: {dynamic_threshold:.2f}")
                 else:
                     # Нормальний рівень активності
-                    logger.debug(f"Нормальна активність для {symbol}, ймовірність: {result['probability_score']:.2f}")
+                    logger.debug(
+                        f"Нормальна активність для {symbol}, ймовірність: {result['probability_score']:.2f}, поріг: {dynamic_threshold:.2f}")
 
             except Exception as e:
                 logger.error(f"Помилка при аналізі {symbol}: {str(e)}")

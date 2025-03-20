@@ -1,6 +1,3 @@
-import numpy as np
-
-
 class OrderBookAnalyzer:
     """
     Клас для аналізу книги ордерів криптовалют.

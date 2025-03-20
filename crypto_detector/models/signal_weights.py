@@ -46,7 +46,19 @@ class SignalWeightsManager:
                 self.default_weights.update(general_weights)
 
             # Завантаження ваг для кожної категорії
-            categories = ['meme', 'defi', 'l1_blockchain', 'l2_scaling', 'gaming', 'exchange', 'other']
+            categories = [
+                'meme',
+                'defi',
+                'l1_blockchain',
+                'l2_scaling',
+                'gaming',
+                'exchange',
+                'stablecoin',
+                'infrastructure',
+                'ai_big_data',
+                'other',
+            ]
+
             for category in categories:
                 weights = self.storage.load_signal_weights(category)
                 if weights:

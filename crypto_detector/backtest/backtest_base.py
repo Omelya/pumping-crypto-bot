@@ -37,13 +37,19 @@ class CryptoBacktester:
         :param symbol: Символ криптовалюти
         :return: Поріг для класифікації
         """
+        from crypto_detector.config.settings import TOKEN_THRESHOLDS, TOKEN_CATEGORIES
+
         base_currency = symbol.split('/')[0]
-        if base_currency in ['PEPE', 'SHIB', 'DOGE', 'CTT']:
-            return 0.12  # Нижчий поріг для мем-токенів
-        elif base_currency in ['TON', 'SOL', 'DOT', 'AVAX']:
-            return 0.15  # Середній поріг для альткоїнів
-        else:
-            return 0.18  # Вищий поріг для інших токенів
+
+        # Визначення категорії токена
+        category = 'other'  # За замовчуванням
+        for cat, tokens in TOKEN_CATEGORIES.items():
+            if base_currency in tokens:
+                category = cat
+                break
+
+        # Повернення порогу на основі категорії
+        return TOKEN_THRESHOLDS.get(category, TOKEN_THRESHOLDS['other'])
 
     async def download_historical_data(self, symbol, start_date, end_date, timeframe='5m'):
         """
@@ -105,7 +111,7 @@ class CryptoBacktester:
             df.sort_index(inplace=True)
 
             # Збереження даних у файл
-            filename = os.path.join(symbol_dir, f"currency/{timeframe}_{start_date}_{end_date}.csv")
+            filename = os.path.join(symbol_dir, f"{timeframe}_{start_date}_{end_date}.csv")
             df.to_csv(filename)
             print(f"Збережено {len(df)} записів у {filename}")
 

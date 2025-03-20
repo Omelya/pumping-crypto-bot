@@ -19,23 +19,29 @@ ALERT_THRESHOLD = 0.35             # Поріг для створення спо
 
 # Пороги за типами токенів
 TOKEN_THRESHOLDS = {
-    'meme': 0.12,         # Нижчий поріг для мем-токенів
-    'defi': 0.15,         # Середній поріг для DeFi-токенів
-    'l1_blockchain': 0.15, # Середній поріг для L1-блокчейнів
-    'l2_scaling': 0.15,   # Середній поріг для L2-рішень
-    'gaming': 0.15,       # Середній поріг для ігрових токенів
-    'exchange': 0.18,     # Вищий поріг для токенів бірж
-    'other': 0.18         # За замовчуванням для інших токенів
+    'meme': 0.45,              # Нижчий поріг для мем-токенів (оновлено)
+    'defi': 0.50,              # Середній поріг для DeFi-токенів (оновлено)
+    'l1_blockchain': 0.65,     # Вищий поріг для L1-блокчейнів (оновлено)
+    'l2_scaling': 0.55,        # Середній поріг для L2-рішень (оновлено)
+    'gaming': 0.50,            # Середній поріг для ігрових токенів (оновлено)
+    'exchange': 0.70,          # Вищий поріг для токенів бірж (оновлено)
+    'stablecoin': 0.85,        # Надвисокий поріг для стейблкоїнів (додано)
+    'infrastructure': 0.60,    # Підвищений поріг для інфраструктурних токенів (додано)
+    'ai_big_data': 0.50,       # Середній поріг для AI/Big Data токенів (додано)
+    'other': 0.55              # За замовчуванням для інших токенів (оновлено)
 }
 
 # Мапа категорій токенів
 TOKEN_CATEGORIES = {
-    'meme': ['PEPE', 'SHIB', 'DOGE', 'FLOKI', 'CAT', 'CTT', 'WIF'],
-    'defi': ['UNI', 'AAVE', 'CAKE', 'COMP', 'MKR', 'SNX', 'YFI', 'SUSHI'],
-    'l1_blockchain': ['ETH', 'SOL', 'ADA', 'AVAX', 'DOT', 'NEAR', 'FTM', 'ATOM'],
-    'l2_scaling': ['MATIC', 'ARB', 'OP', 'IMX', 'ZK', 'BASE', 'STX'],
-    'gaming': ['AXS', 'SAND', 'MANA', 'ENJ', 'GALA', 'ILV'],
-    'exchange': ['BNB', 'CRO', 'FTT', 'KCS', 'LEO', 'OKB']
+    'meme': ['PEPE', 'SHIB', 'DOGE', 'FLOKI', 'CAT', 'CTT', 'WIF', 'BONK', 'TURBO'],
+    'defi': ['UNI', 'AAVE', 'CAKE', 'COMP', 'MKR', 'SNX', 'YFI', 'SUSHI', 'CRV', 'LDO', 'BAL', 'RUNE'],
+    'l1_blockchain': ['BTC', 'ETH', 'SOL', 'ADA', 'AVAX', 'DOT', 'NEAR', 'FTM', 'ATOM', 'XRP', 'EGLD', 'ICP', 'ALGO'],
+    'l2_scaling': ['MATIC', 'ARB', 'OP', 'IMX', 'BASE', 'STX', 'METIS', 'LOOM', 'SYS'],
+    'gaming': ['MAVIA', 'AXS', 'SAND', 'MANA', 'ENJ', 'GALA', 'ILV', 'GODS', 'PYR', 'DAR', 'WAXP'],
+    'exchange': ['BNB', 'CRO', 'KCS', 'LEO', 'OKB', 'HT', 'GT'],
+    'stablecoin': ['USDT', 'USDC', 'DAI', 'TUSD', 'BUSD', 'FRAX'],
+    'infrastructure': ['LINK', 'GRT', 'OCEAN', 'BAND', 'API3'],
+    'ai_big_data': ['FET', 'AGIX', 'RNDR', 'ALI', 'NMR']
 }
 
 # Початкові ваги сигналів
@@ -47,7 +53,9 @@ DEFAULT_SIGNAL_WEIGHTS = {
     'Нові лістинги на біржах': 0.10,
     'Підозрілий часовий патерн': 0.15,
     'Корельована активність з іншими монетами': 0.15,
-    'Прискорення зростання об\'єму': 0.15
+    'Прискорення зростання об\'єму': 0.15,
+    'Значна зміна ціни за 24 години': 0.40,
+    'Dump фаза після pump': 0.35
 }
 
 # Години підвищеного ризику (ніч та пізній вечір)

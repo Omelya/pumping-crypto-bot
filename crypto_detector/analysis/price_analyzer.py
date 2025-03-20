@@ -16,7 +16,7 @@ class PriceAnalyzer:
 
     async def detect_price_action(self, df_ohlcv):
         """
-        Аналіз цінової динаміки
+        Аналіз цінової динаміки з покращеним виявленням pump-and-dump схем
 
         :param df_ohlcv: DataFrame з OHLCV даними
         :return: Dict з результатами аналізу
@@ -31,11 +31,25 @@ class PriceAnalyzer:
         historical_volatility = df_ohlcv['returns'][:-5].std()
         recent_volatility = df_ohlcv['returns'][-5:].std()
 
-        # Розрахунок зміни ціни
+        # Розрахунок зміни ціни для різних часових діапазонів
         price_change_1h = (df_ohlcv['close'].iloc[-1] / df_ohlcv['close'].iloc[-12] - 1) * 100 if len(
             df_ohlcv) >= 12 else 0
         price_change_24h = (df_ohlcv['close'].iloc[-1] / df_ohlcv['close'].iloc[0] - 1) * 100 if len(
             df_ohlcv) > 1 else 0
+
+        # Новий розрахунок: відстань до локального максимуму
+        window_high = df_ohlcv['high'].max()
+        current_price = df_ohlcv['close'].iloc[-1]
+        distance_from_high = (current_price / window_high - 1) * 100
+
+        # Визначення, чи був пік ціни в останні 48 годин
+        high_idx = df_ohlcv['high'].idxmax()
+        latest_idx = df_ohlcv.index[-1]
+        try:
+            hours_since_peak = abs((latest_idx - high_idx).total_seconds()) / 3600
+            recent_peak = hours_since_peak < 48
+        except:
+            recent_peak = False
 
         # Пошук різких рухів ціни (свічки з великими тілами)
         df_ohlcv['body_size'] = abs(df_ohlcv['close'] - df_ohlcv['open']) / df_ohlcv['open'] * 100
@@ -48,15 +62,38 @@ class PriceAnalyzer:
         # Виявлення прискорення руху ціни
         price_acceleration = df_ohlcv['price_change'].diff()[-5:].mean() if len(df_ohlcv) >= 6 else 0
 
+        # Розрахунок експоненційного скользящого середнього для виявлення тренду
+        if len(df_ohlcv) >= 20:
+            df_ohlcv['ema20'] = df_ohlcv['close'].ewm(span=20).mean()
+            price_above_ema = df_ohlcv['close'].iloc[-1] > df_ohlcv['ema20'].iloc[-1]
+        else:
+            price_above_ema = False
+
+        # Поліпшена логіка сигналу для виявлення pump-and-dump
+        pump_signal = price_change_1h > 3 or recent_volatility > historical_volatility * 1.5 or consecutive_up >= 4 or large_candles >= 2
+
+        # Додаткова перевірка на значну зміну ціни за 24 години (pump фаза)
+        significant_pump = price_change_24h > 50
+
+        # Ознака dump фази (ціна опустилася значно нижче пікової)
+        dump_phase = distance_from_high < -15 and recent_peak
+
+        # Комбінований сигнал
+        price_action_signal = pump_signal or significant_pump or dump_phase
+
         return {
-            'price_action_signal': price_change_1h > 3 or recent_volatility > historical_volatility * 1.5 or
-                                   large_candles >= 2 or consecutive_up >= 4 or price_acceleration > 0.01,
+            'price_action_signal': price_action_signal,
             'price_change_1h': price_change_1h,
             'price_change_24h': price_change_24h,
             'volatility_ratio': recent_volatility / historical_volatility if historical_volatility > 0 else 0,
             'large_candles': large_candles,
             'consecutive_up': consecutive_up,
-            'price_acceleration': price_acceleration
+            'price_acceleration': price_acceleration,
+            'distance_from_high': distance_from_high,
+            'hours_since_peak': hours_since_peak if recent_peak else None,
+            'significant_pump': significant_pump,
+            'dump_phase': dump_phase,
+            'price_above_ema': price_above_ema
         }
 
     async def analyze_historical_price(self, data_window):

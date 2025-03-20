@@ -610,7 +610,6 @@ class MLTrainer:
         # Налаштування графіка
         plt.title(title or 'Feature Importance')
         plt.tight_layout()
-        plt.show()
 
     def visualize_confusion_matrix(self, confusion_matrix_data, title=None):
         """
@@ -629,7 +628,6 @@ class MLTrainer:
         plt.ylabel('Справжні мітки')
         plt.xlabel('Передбачені мітки')
         plt.tight_layout()
-        plt.show()
 
     def plot_threshold_optimization(self, y_true, y_prob, metric='f1', title=None):
         """
@@ -706,7 +704,6 @@ class MLTrainer:
 
         plt.suptitle(title or f'Оптимізація порогу за метрикою {metric}')
         plt.tight_layout()
-        plt.show()
 
         return optimal_threshold, optimal_value
 
@@ -727,3 +724,144 @@ class MLTrainer:
 
         print(f"Історію навчання збережено у {file_path}")
         return file_path
+
+    def extract_standard_features(self, data):
+        """
+        Стандартизоване витягування ознак для моделі.
+        Забезпечує узгодженість між навчанням і прогнозуванням.
+        Включає нові ознаки для виявлення pump-and-dump схем.
+
+        :param data: DataFrame з даними
+        :return: DataFrame з стандартизованими ознаками
+        """
+        # Стандартний набір ознак (16 ознак)
+        standard_features = [
+            # Ознаки об'єму (4)
+            'volume_percent_change', 'volume_z_score', 'volume_anomaly_count', 'volume_acceleration',
+            # Ознаки ціни (6)
+            'price_change_1h', 'price_change_24h', 'volatility_ratio', 'large_candles',
+            'consecutive_up', 'price_acceleration',
+            # Ознаки книги ордерів (4)
+            'buy_sell_ratio', 'top_concentration', 'has_buy_wall', 'has_sell_wall',
+            # Ознаки соціальних даних (2)
+            'social_percent_change', 'social_growth_acceleration'
+        ]
+
+        # Створюємо DataFrame з стандартними ознаками
+        features_df = pd.DataFrame(index=data.index)
+
+        # Заповнюємо наявними ознаками
+        for feature in standard_features:
+            if feature in data.columns:
+                features_df[feature] = data[feature]
+            else:
+                # Спробуємо знайти альтернативні назви колонок
+                if feature == 'price_change_24h' and 'price_change_24h' not in data.columns:
+                    # Перевіряємо наявність альтернативних назв
+                    for alt_name in ['24h_price_change', 'daily_price_change', 'price_change_day']:
+                        if alt_name in data.columns:
+                            features_df[feature] = data[alt_name]
+                            break
+                    else:
+                        # Якщо не знайдено, заповнюємо нулями
+                        features_df[feature] = 0
+                elif feature == 'volume_percent_change' and 'volume_percent_change' not in data.columns:
+                    # Перевіряємо наявність альтернативних назв
+                    for alt_name in ['percent_change', 'volume_change_pct']:
+                        if alt_name in data.columns:
+                            features_df[feature] = data[alt_name]
+                            break
+                    else:
+                        features_df[feature] = 0
+                else:
+                    # Заповнюємо нулями, якщо ознака відсутня
+                    features_df[feature] = 0
+
+        # Нормалізація числових значень
+        for feature in features_df.columns:
+            # Для відсоткових значень - ділимо на 100 для нормалізації
+            if 'percent' in feature or 'change' in feature:
+                features_df[feature] = features_df[feature] / 100
+
+            # Для стандартизованих значень (z_score) - залишаємо як є
+            # Для булевих - перетворюємо в 0/1
+            if feature in ['has_buy_wall', 'has_sell_wall']:
+                features_df[feature] = features_df[feature].astype(int)
+
+        return features_df
+
+    def prepare_model_features(self, X, y=None):
+        """
+        Підготовка ознак для моделі, забезпечуючи правильну кількість і порядок.
+        Включає перевірку нових pump-and-dump метрик.
+
+        :param X: Вхідні ознаки
+        :param y: Мітки (необов'язково)
+        :return: Підготовлені ознаки X (і мітки y, якщо передані)
+        """
+        # Перевіряємо, чи це DataFrame
+        if isinstance(X, pd.DataFrame):
+            # Стандартизуємо ознаки
+            X_std = self.extract_standard_features(X)
+
+            # Додаємо нові ознаки для виявлення pump-and-dump, якщо вони є
+            if 'distance_from_high' in X.columns:
+                X_std['distance_from_high'] = X['distance_from_high'] / 100
+            else:
+                X_std['distance_from_high'] = 0
+
+            if 'dump_phase' in X.columns:
+                X_std['dump_phase'] = X['dump_phase'].astype(int)
+            else:
+                X_std['dump_phase'] = 0
+
+            if 'significant_pump' in X.columns:
+                X_std['significant_pump'] = X['significant_pump'].astype(int)
+            else:
+                X_std['significant_pump'] = 0
+
+            if 'price_above_ema' in X.columns:
+                X_std['price_above_ema'] = X['price_above_ema'].astype(int)
+            else:
+                X_std['price_above_ema'] = 0
+
+            # Переконуємося, що всі ознаки числові
+            for col in X_std.columns:
+                X_std[col] = pd.to_numeric(X_std[col], errors='coerce')
+
+            # Заповнюємо пропущені значення
+            X_std = X_std.fillna(0)
+
+            # Перевіряємо кількість ознак
+            if X_std.shape[1] != 16:
+                print(f"WARNING: Feature count is {X_std.shape[1]}, expected 16. Adjusting...")
+                # Якщо ознак більше, видаляємо зайві
+                if X_std.shape[1] > 16:
+                    X_std = X_std.iloc[:, :16]
+                # Якщо ознак менше, додаємо нульові
+                else:
+                    for i in range(X_std.shape[1], 16):
+                        X_std[f'feature_{i}'] = 0
+
+            if y is not None:
+                return X_std, y
+            return X_std
+
+        # Якщо це numpy array
+        elif isinstance(X, np.ndarray):
+            # Перевіряємо розмірність
+            if X.shape[1] != 16:
+                print(f"WARNING: Feature count is {X.shape[1]}, expected 16. Adjusting...")
+                # Якщо ознак більше, видаляємо зайві
+                if X.shape[1] > 16:
+                    X = X[:, :16]
+                # Якщо ознак менше, додаємо нульові
+                else:
+                    X = np.pad(X, ((0, 0), (0, 16 - X.shape[1])), 'constant')
+
+            if y is not None:
+                return X, y
+            return X
+
+        else:
+            raise ValueError("Input X must be a DataFrame or numpy array")

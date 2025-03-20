@@ -1,9 +1,5 @@
 import asyncio
 from datetime import datetime
-from collections import deque
-import pandas as pd
-import numpy as np
-import os
 
 from crypto_detector.data.exchange_client import ExchangeClient
 from crypto_detector.analysis.volume_analyzer import VolumeAnalyzer
@@ -75,7 +71,7 @@ class CryptoActivityDetector:
 
     async def analyze_token(self, symbol, all_symbols=None):
         """
-        Комплексний аналіз криптовалюти
+        Комплексний аналіз криптовалюти з покращеним виявленням pump-and-dump схем
 
         :param symbol: Символ криптовалюти з форматом CCXT (наприклад, 'BTC/USDT')
         :param all_symbols: Список всіх символів для аналізу корелляції (опціонально)
@@ -171,6 +167,24 @@ class CryptoActivityDetector:
                 'weight': 0.15
             })
             confidence += 0.15 * min(volume_analysis['volume_acceleration'] / 0.2, 1.0)
+
+        # НОВИЙ Сигнал 8: Значна зміна ціни за 24 години
+        if price_analysis.get('price_change_24h', 0) > 50:
+            signals.append({
+                'name': 'Значна зміна ціни за 24 години',
+                'description': f"Ціна зросла на {price_analysis['price_change_24h']:.2f}% за останні 24 години",
+                'weight': 0.40
+            })
+            confidence += 0.40 * min(price_analysis['price_change_24h'] / 100, 1.0)
+
+        # НОВИЙ Сигнал 9: Виявлено dump фазу після pump
+        if price_analysis.get('dump_phase', False):
+            signals.append({
+                'name': 'Dump фаза після pump',
+                'description': f"Ціна знизилась на {abs(price_analysis['distance_from_high']):.2f}% від нещодавнього піку",
+                'weight': 0.35
+            })
+            confidence += 0.35 * min(abs(price_analysis['distance_from_high']) / 30, 1.0)
 
         # Формування результату
         result = {

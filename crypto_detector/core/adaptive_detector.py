@@ -1,5 +1,7 @@
 import os
 import json
+
+import numpy as np
 import pandas as pd
 from datetime import datetime
 from sklearn.metrics import precision_score, recall_score, f1_score
@@ -145,26 +147,26 @@ class AdaptiveCryptoDetector:
 
             # Переобчислюємо внесок сигналу відповідно до його ваги
             if signal_name == 'Аномальний обсяг торгів':
-                percent_change = base_result['raw_data']['volume']['percent_change']
+                percent_change = base_result['raw_data']['volume'].get('percent_change', 0)
                 confidence += weights[signal_name] * min(percent_change / 80, 1.0) if percent_change > 0 else 0
 
             elif signal_name == 'Активна цінова динаміка':
-                price_change = base_result['raw_data']['price']['price_change_1h']
+                price_change = base_result['raw_data']['price'].get('price_change_1h', 0)
                 confidence += weights[signal_name] * min(abs(price_change) / 8, 1.0)
 
             elif signal_name == 'Дисбаланс книги ордерів':
-                ratio = base_result['raw_data']['order_book']['buy_sell_ratio']
+                ratio = base_result['raw_data']['order_book'].get('buy_sell_ratio', 1.0)
                 confidence += weights[signal_name] * (min(ratio / 1.7, 1.0) if ratio > 1 else min(1 / ratio / 1.7, 1.0))
 
             elif signal_name == 'Підвищена активність у соціальних мережах':
-                social_change = base_result['raw_data']['social']['percent_change']
+                social_change = base_result['raw_data']['social'].get('percent_change', 0)
                 confidence += weights[signal_name] * min(social_change / 80, 1.0)
 
             elif signal_name == 'Нові лістинги на біржах':
                 confidence += weights[signal_name]
 
             elif signal_name == 'Підозрілий часовий патерн':
-                time_risk = base_result['raw_data']['time_pattern']['time_risk_score']
+                time_risk = base_result['raw_data']['time_pattern'].get('time_risk_score', 0)
                 confidence += weights[signal_name] * time_risk
 
             elif signal_name == 'Корельована активність з іншими монетами':
@@ -178,10 +180,36 @@ class AdaptiveCryptoDetector:
         ml_probability = None
         if category in self.ml_models:
             try:
+                # Витягуємо ознаки і перевіряємо їх розмірність
                 features = self._extract_features_from_result(base_result)
-                ml_probability = self.ml_models[category].predict_proba([features])[0][1]
+
+                # Додаємо діагностичний вивід
+                print(f"Extracted {len(features)} features for ML prediction")
+
+                # Трансформація в numpy масив для моделі
+                features_array = np.array(features).reshape(1, -1)
+
+                # Перевірка чи відповідає розмірність очікуваній
+                expected_features = 16
+                if features_array.shape[1] != expected_features:
+                    print(
+                        f"WARNING: Feature count mismatch before prediction - got {features_array.shape[1]}, expected {expected_features}")
+
+                    # Приведення до правильної довжини (це має бути резервний варіант)
+                    if features_array.shape[1] > expected_features:
+                        features_array = features_array[:, :expected_features]
+                    else:
+                        features_array = np.pad(features_array,
+                                                ((0, 0), (0, expected_features - features_array.shape[1])), 'constant')
+
+                # Отримання передбачення
+                ml_probability = self.ml_models[category].predict_proba(features_array)[0][1]
+                print(f"ML prediction successful, probability: {ml_probability:.4f}")
+
             except Exception as e:
                 print(f"Помилка при використанні ML моделі: {str(e)}")
+                import traceback
+                traceback.print_exc()
 
         # Комбінуємо оцінки (евристичну та ML, якщо є)
         final_probability = confidence
@@ -202,7 +230,7 @@ class AdaptiveCryptoDetector:
         self.training_history[category].append({
             'timestamp': datetime.now(),
             'symbol': symbol,
-            'features': self._extract_features_from_result(base_result),
+            'features': features,
             'probability': result['probability_score'],
             'signals': {s['name']: s['weight'] for s in result['signals']},
             'actual_event': None  # Буде заповнено пізніше через feedback
@@ -212,7 +240,7 @@ class AdaptiveCryptoDetector:
 
     def _extract_features_from_result(self, result):
         """
-        Витягування ознак з результату для ML моделі
+        Витягування ознак з результату для ML моделі з урахуванням нових метрик pump-and-dump
 
         :param result: Результат аналізу
         :return: Список ознак
@@ -228,15 +256,29 @@ class AdaptiveCryptoDetector:
             volume_data.get('volume_acceleration', 0)
         ])
 
-        # Ознаки ціни
+        # Ознаки ціни - оновлені з новими метриками
         price_data = result['raw_data']['price']
         features.extend([
             price_data.get('price_change_1h', 0) / 100,
-            price_data.get('price_change_24h', 0) / 100,
+            price_data.get('price_change_24h', 0) / 100,  # Важлива метрика для pump-and-dump
             price_data.get('volatility_ratio', 0),
             price_data.get('large_candles', 0) / 5,
             price_data.get('consecutive_up', 0) / 5,
             price_data.get('price_acceleration', 0)
+        ])
+
+        # Додаємо нові ознаки для виявлення pump-and-dump
+        distance_from_high = price_data.get('distance_from_high', 0) / 100
+        dump_phase = 1 if price_data.get('dump_phase', False) else 0
+        significant_pump = 1 if price_data.get('significant_pump', False) else 0
+        price_above_ema = 1 if price_data.get('price_above_ema', False) else 0
+
+        # Додаємо нові метрики до списку ознак
+        features.extend([
+            distance_from_high,
+            dump_phase,
+            significant_pump,
+            price_above_ema
         ])
 
         # Ознаки книги ордерів
@@ -244,7 +286,6 @@ class AdaptiveCryptoDetector:
         features.extend([
             orderbook_data.get('buy_sell_ratio', 1.0),
             orderbook_data.get('top_concentration', 0),
-            orderbook_data.get('spread', 0) / 100,
             1 if orderbook_data.get('has_buy_wall', False) else 0,
             1 if orderbook_data.get('has_sell_wall', False) else 0
         ])
@@ -267,6 +308,16 @@ class AdaptiveCryptoDetector:
         # Ознаки кореляції ринків
         correlation_data = result['raw_data']['correlation']
         features.append(1 if correlation_data.get('correlation_signal', False) else 0)
+
+        # Перевірка на правильну кількість ознак
+        expected_features = 16
+        if len(features) != expected_features:
+            print(f"WARNING: Feature count mismatch - got {len(features)}, expected {expected_features}")
+            # Приведення до правильної довжини для сумісності з моделлю
+            if len(features) > expected_features:
+                features = features[:expected_features]
+            else:
+                features.extend([0] * (expected_features - len(features)))
 
         return features
 
@@ -350,13 +401,27 @@ class AdaptiveCryptoDetector:
         features_list = [e['features'] for e in labeled_entries]
         labels = [1 if e['actual_event'] else 0 for e in labeled_entries]
 
-        # Створюємо директорію для тимчасових даних, якщо вона не існує
+        # Переконуємося, що всі фічі мають стандартну довжину
+        expected_features = 16
+        standardized_features = []
+
+        for features in features_list:
+            # Переконуємося, що маємо правильну кількість ознак
+            if len(features) != expected_features:
+                print(f"Adjusting feature count: {len(features)} -> {expected_features}")
+                if len(features) > expected_features:
+                    features = features[:expected_features]
+                else:
+                    features = features + [0] * (expected_features - len(features))
+            standardized_features.append(features)
+
+        # Створення директорії для тимчасових даних, якщо вона не існує
         temp_dir = os.path.join(self.model_dir, "temp")
         if not os.path.exists(temp_dir):
             os.makedirs(temp_dir)
 
         # Зберігаємо дані у тимчасовий CSV
-        training_data = pd.DataFrame(features_list)
+        training_data = pd.DataFrame(standardized_features)
         training_data['is_event'] = labels
 
         # Додаємо назви ознак для зрозумілості
@@ -364,14 +429,24 @@ class AdaptiveCryptoDetector:
             'volume_percent_change', 'volume_z_score', 'volume_anomaly_count', 'volume_acceleration',
             'price_change_1h', 'price_change_24h', 'volatility_ratio', 'large_candles', 'consecutive_up',
             'price_acceleration',
-            'buy_sell_ratio', 'top_concentration', 'spread', 'has_buy_wall', 'has_sell_wall',
-            'social_percent_change', 'social_growth_acceleration',
-            'time_risk_score', 'is_high_risk_hour', 'is_weekend',
-            'correlation_signal'
+            'buy_sell_ratio', 'top_concentration', 'has_buy_wall', 'has_sell_wall',
+            'social_percent_change', 'social_growth_acceleration'
         ]
+
+        # Перевіряємо чи кількість назв відповідає кількості колонок (мінус колонка з мітками)
+        if len(feature_names) != training_data.shape[1] - 1:
+            print(
+                f"WARNING: Feature names count ({len(feature_names)}) doesn't match data columns ({training_data.shape[1] - 1})")
+            # Додаємо або видаляємо назви ознак для відповідності
+            if len(feature_names) < training_data.shape[1] - 1:
+                for i in range(len(feature_names), training_data.shape[1] - 1):
+                    feature_names.append(f'feature_{i}')
+            else:
+                feature_names = feature_names[:(training_data.shape[1] - 1)]
 
         # Перейменовуємо колонки
         column_mapping = {i: name for i, name in enumerate(feature_names)}
+        column_mapping[training_data.shape[1] - 1] = 'is_event'  # Остання колонка - мітки
         training_data = training_data.rename(columns=column_mapping)
 
         # Зберігаємо дані у тимчасовий файл
@@ -385,6 +460,14 @@ class AdaptiveCryptoDetector:
             # Підготовка даних
             X, y = self.ml_trainer.prepare_features(training_file)
 
+            # Переконуємося у правильній кількості ознак
+            if X.shape[1] != expected_features:
+                print(
+                    f"WARNING: Features shape after prepare_features: {X.shape}, expected ({len(labeled_entries)}, {expected_features})")
+                # Використовуємо функцію коригування ознак
+                X = self.ml_trainer.prepare_model_features(X)
+                print(f"Features shape after adjustment: {X.shape}")
+
             # Спочатку спробуємо знайти оптимальні гіперпараметри
             print(f"Оптимізація гіперпараметрів для {category}...")
             best_params, _ = self.ml_trainer.optimize_hyperparameters(X, y, model_type='gradient_boosting',
@@ -394,6 +477,11 @@ class AdaptiveCryptoDetector:
             print(f"Тренування моделі для {category} з оптимальними параметрами: {best_params}")
             model, info = self.ml_trainer.train_model(X, y, model_type='gradient_boosting', category=category,
                                                       **best_params)
+
+            # Збереження найкращих параметрів для використання у майбутньому
+            model_params_file = os.path.join(self.model_dir, f"{category}_best_params.json")
+            with open(model_params_file, 'w') as f:
+                json.dump(best_params, f, indent=4)
 
             # Зберігаємо натреновану модель
             self.ml_models[category] = model
@@ -426,6 +514,8 @@ class AdaptiveCryptoDetector:
 
         except Exception as e:
             print(f"Помилка при навчанні ML моделі для категорії {category}: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
         # Очищаємо історію, залишаючи останні 50 записів для наступного навчання
         self.training_history[category] = self.training_history[category][-50:]
@@ -439,18 +529,8 @@ class AdaptiveCryptoDetector:
         """
         category = self._get_token_category(symbol)
 
-        # Базовий поріг з налаштувань
-        base_currency = symbol.split('/')[0]
-        if base_currency in ['PEPE', 'SHIB', 'DOGE', 'CTT']:
-            base_threshold = 0.12  # Нижчий поріг для мем-токенів
-        elif base_currency in ['TON', 'SOL', 'DOT', 'AVAX']:
-            base_threshold = 0.15  # Середній поріг для альткоїнів
-        else:
-            base_threshold = 0.18  # Вищий поріг для інших токенів
-
-        # Спроба отримати оптимізований поріг з SignalWeightsManager
+        # Спроба отримати оптимізований поріг з історичних даних
         try:
-            # Якщо є достатньо даних, використовуємо SignalWeightsManager для пошуку оптимального порогу
             if category in self.training_history:
                 labeled_entries = [e for e in self.training_history[category] if e['actual_event'] is not None]
                 if len(labeled_entries) >= 30:
@@ -458,8 +538,9 @@ class AdaptiveCryptoDetector:
         except Exception as e:
             print(f"Помилка при пошуку оптимального порогу: {str(e)}")
 
-        # Якщо не вдалося отримати оптимізований поріг, повертаємо базовий
-        return base_threshold
+        # Повернення порогу з налаштувань, якщо немає оптимізованого порогу
+        from crypto_detector.config.settings import TOKEN_THRESHOLDS
+        return TOKEN_THRESHOLDS.get(category, TOKEN_THRESHOLDS['other'])
 
     async def analyze_historical_point(self, symbol, data_window, timestamp):
         """
