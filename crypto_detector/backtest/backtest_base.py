@@ -3,10 +3,10 @@ import json
 import asyncio
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
 from datetime import datetime, timedelta
 from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix
+
+from crypto_detector.backtest.event_generator import EventGenerator
 
 
 class CryptoBacktester:
@@ -134,62 +134,79 @@ class CryptoBacktester:
             print(f"Помилка завантаження даних з {filename}: {str(e)}")
             return None
 
-    def generate_test_events(self, historical_data, min_price_change=5.0, window=24):
+    def generate_test_events(self, historical_data, min_price_change=5.0, window=24, generate_non_events=True,
+                             visualization=False):
         """
         Генерація тестових подій на основі історичних даних
 
         :param historical_data: DataFrame з історичними даними
         :param min_price_change: Мінімальна зміна ціни в % для позначення як події
         :param window: Вікно для аналізу в годинах
+        :param generate_non_events: Чи генерувати не-події для збалансованого навчання
+        :param visualization: Чи візуалізувати знайдені події
         :return: DataFrame з подіями
         """
-        # Розрахунок % зміни за період
-        historical_data['price_change'] = historical_data['close'].pct_change(window) * 100
+        # Використання EventGenerator для виявлення подій
+        event_generator = EventGenerator(
+            min_price_change=min_price_change,
+            min_volume_change=30.0,  # Використовуємо стандартне значення з вашого коду
+            min_dump_percent=15.0  # Використовуємо стандартне значення з вашого коду
+        )
 
-        # Додавання волатильності та об'єму для аналізу
-        historical_data['volatility'] = historical_data['close'].pct_change().rolling(window=12).std() * 100
-        historical_data['volume_change'] = historical_data['volume'].pct_change(12) * 100
+        # Генерація подій за допомогою EventGenerator
+        events_df = event_generator.generate_events(historical_data, window_hours=window)
 
-        # Знаходження точок з суттєвою зміною ціни
-        events = []
+        if not events_df.empty:
+            print(f"До фільтрації: {len(events_df)} подій")
+            print(f"- Pump-and-dump: {len(events_df[events_df['event_type'] == 'pump_and_dump'])}")
+            print(f"- Pump only: {len(events_df[events_df['event_type'] == 'pump_only'])}")
 
-        for i in range(window, len(historical_data) - window):
-            # Перевірка на PUMP фазу (різке зростання ціни)
-            if historical_data['price_change'].iloc[i] > min_price_change:
-                # Перевірка наступних свічок на DUMP
-                forward_window = historical_data.iloc[i:i + window]
-                if len(forward_window) >= 10:
-                    max_price = forward_window['high'].max()
-                    max_price_idx = forward_window['high'].idxmax()
-                    end_price = forward_window['close'].iloc[-1]
-                    dump_percent = (end_price / max_price - 1) * 100
+            # 1. Залишаємо тільки події з найвищим pump_percent (верхні 25%)
+            pump_threshold = events_df['pump_percent'].quantile(0.75)
+            events_df = events_df[events_df['pump_percent'] >= pump_threshold]
 
-                    # Додаткова перевірка на підвищений об'єм
-                    volume_spike = historical_data['volume_change'].iloc[i] > 30  # 30% зростання об'єму
+            # 2. Переконуємося, що події розділені в часі (мінімум 12 годин між подіями)
+            events_to_keep = []
+            events_sorted = events_df.sort_index()
+            last_event_time = None
 
-                    # Якщо відбувся і pump і dump, або просто сильний pump з підвищеним об'ємом
-                    if dump_percent < -5 or (
-                            volume_spike and historical_data['price_change'].iloc[i] > min_price_change * 1.5):
-                        event_time = historical_data.index[i - window]
-                        event_data = {
-                            'timestamp': event_time,
-                            'start_price': historical_data['close'].iloc[i - window],
-                            'peak_price': max_price,
-                            'peak_time': max_price_idx,
-                            'end_price': end_price,
-                            'pump_percent': historical_data['price_change'].iloc[i],
-                            'dump_percent': dump_percent,
-                            'volume_change': historical_data['volume_change'].iloc[i],
-                            'is_event': 1
-                        }
-                        events.append(event_data)
+            for event_time, event in events_sorted.iterrows():
+                if last_event_time is None or (event_time - last_event_time).total_seconds() / 3600 >= 12:
+                    events_to_keep.append(event_time)
+                    last_event_time = event_time
 
-        # Створення DataFrame з подіями
-        if events:
-            events_df = pd.DataFrame(events)
-            events_df.set_index('timestamp', inplace=True)
-            print(f"Знайдено {len(events_df)} pump-and-dump подій")
-            return events_df
+            filtered_events_df = events_df.loc[events_to_keep]
+
+            # Виводимо інформацію про відфільтровані події
+            print(f"Після фільтрації: {len(filtered_events_df)} подій")
+            print(f"- Pump-and-dump: {len(filtered_events_df[filtered_events_df['event_type'] == 'pump_and_dump'])}")
+            print(f"- Pump only: {len(filtered_events_df[filtered_events_df['event_type'] == 'pump_only'])}")
+
+            # Використовуємо відфільтровані події
+            events_df = filtered_events_df
+
+            # Для сумісності з існуючим кодом забезпечуємо наявність 'is_event' колонки
+            if 'is_event' not in events_df.columns:
+                events_df['is_event'] = 1
+
+            # Генерація не-подій, якщо вказано
+            combined_df = events_df.copy()
+
+            if generate_non_events:
+                non_events_df = event_generator.generate_non_events(historical_data, events_df, ratio=1.5)
+
+                if not non_events_df.empty:
+                    combined_df = event_generator.combine_events(events_df, non_events_df)
+                    events_count = len(combined_df[combined_df['is_event'] == 1])
+                    non_events_count = len(combined_df[combined_df['is_event'] == 0])
+                    print(f"\nСтворено набір даних з {events_count} подій та {non_events_count} не-подій")
+                    print(f"Співвідношення: {non_events_count / events_count:.2f}")
+
+            # Візуалізація подій, якщо вказано
+            if visualization:
+                event_generator.visualize_events(historical_data, events_df, n_samples=3)
+
+            return combined_df
         else:
             print("Не знайдено подій, що відповідають критеріям")
             return pd.DataFrame()
@@ -290,9 +307,6 @@ class CryptoBacktester:
                 'probability': result['probability_score'],
                 'signals': result['signals']
             })
-
-            print(
-                f"Аналіз на {timestamp}: Подія={is_event}, Прогноз={prediction}, Ймовірність={result['probability_score']:.2f}")
 
         # Розрахунок метрик
         if len(y_true) > 0 and len(y_pred) > 0:
@@ -456,85 +470,3 @@ class CryptoBacktester:
         with open(filename, 'w') as f:
             json.dump(self.results, f, indent=4, default=str)
         print(f"Результати бектестингу збережено у {filename}")
-
-    def visualize_results(self, symbol):
-        """
-        Візуалізація результатів бектестингу
-
-        :param symbol: Символ криптовалюти
-        """
-        if symbol not in self.results:
-            print(f"Немає результатів бектестингу для {symbol}")
-            return
-
-        results = self.results[symbol]
-
-        # Підготовка даних для візуалізації
-        predictions_df = pd.DataFrame(results['predictions'])
-        predictions_df['timestamp'] = pd.to_datetime(predictions_df['timestamp'])
-        predictions_df.set_index('timestamp', inplace=True)
-        predictions_df.sort_index(inplace=True)
-
-        # Створення директорії для графіків, якщо вона не існує
-        charts_dir = os.path.join(self.data_dir, "charts")
-        if not os.path.exists(charts_dir):
-            os.makedirs(charts_dir)
-
-        # Візуалізація результатів
-        plt.figure(figsize=(15, 10))
-
-        # Графік 1: Розподіл ймовірностей
-        plt.subplot(2, 2, 1)
-        sns.histplot(predictions_df['probability'], bins=20, kde=True)
-        plt.title(f'Розподіл ймовірностей для {symbol}')
-        plt.xlabel('Ймовірність')
-        plt.ylabel('Кількість')
-
-        # Графік 2: ROC-крива (спрощено)
-        plt.subplot(2, 2, 2)
-        plt.scatter(predictions_df[predictions_df['is_event'] == 0]['probability'],
-                    np.zeros(len(predictions_df[predictions_df['is_event'] == 0])),
-                    color='blue', alpha=0.5, label='Не події')
-        plt.scatter(predictions_df[predictions_df['is_event'] == 1]['probability'],
-                    np.ones(len(predictions_df[predictions_df['is_event'] == 1])),
-                    color='red', alpha=0.5, label='Події')
-        plt.axhline(y=0.5, color='r', linestyle='-', alpha=0.3)
-        # Додаємо лінію порогу класифікації
-        threshold = self.get_prediction_threshold(symbol)
-        plt.axvline(x=threshold, color='g', linestyle='--', alpha=0.7, label=f'Поріг = {threshold}')
-        plt.title('Розподіл ймовірностей для подій та не-подій')
-        plt.xlabel('Ймовірність')
-        plt.ylabel('Клас')
-        plt.legend()
-
-        # Графік 3: Часова динаміка ймовірностей
-        plt.subplot(2, 1, 2)
-        plt.plot(predictions_df.index, predictions_df['probability'], 'b-', label='Ймовірність')
-
-        # Позначаємо реальні події
-        events = predictions_df[predictions_df['is_event'] == 1]
-        if not events.empty:
-            plt.scatter(events.index, events['probability'], color='red', s=50, label='Реальні події')
-
-        # Позначаємо передбачені події
-        predicted = predictions_df[predictions_df['prediction'] == 1]
-        if not predicted.empty:
-            plt.scatter(predicted.index, predicted['probability'], marker='x', color='green', s=50,
-                        label='Передбачені події')
-
-        # Лінія порогу
-        plt.axhline(y=threshold, color='g', linestyle='--', alpha=0.7)
-
-        plt.title(f'Часова динаміка ймовірностей для {symbol}')
-        plt.xlabel('Дата')
-        plt.ylabel('Ймовірність')
-        plt.legend()
-
-        plt.tight_layout()
-
-        # Збереження графіка у вказаній директорії
-        chart_file = os.path.join(charts_dir, f"{symbol.replace('/', '_')}_backtest_results.png")
-        plt.savefig(chart_file)
-        plt.close()  # Закриваємо фігуру для звільнення пам'яті
-
-        print(f"Візуалізацію збережено як {chart_file}")

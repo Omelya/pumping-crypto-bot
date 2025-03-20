@@ -13,7 +13,6 @@ from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix, roc_auc_score
 from sklearn.pipeline import Pipeline
-
 from crypto_detector.data.data_storage import DataStorage
 
 
@@ -248,11 +247,13 @@ class MLTrainer:
             n_estimators = kwargs.get('n_estimators', 100)
             learning_rate = kwargs.get('learning_rate', 0.1)
             max_depth = kwargs.get('max_depth', 3)
+            subsample = kwargs.get('subsample', 0.8)
 
             model = GradientBoostingClassifier(
                 n_estimators=n_estimators,
                 learning_rate=learning_rate,
                 max_depth=max_depth,
+                subsample=subsample,
                 random_state=self.random_state
             )
         elif model_type == 'random_forest':
@@ -343,9 +344,10 @@ class MLTrainer:
             model = GradientBoostingClassifier(random_state=self.random_state)
             # Використовуємо менше параметрів для прискорення
             param_grid = {
-                'n_estimators': [50, 100],
-                'learning_rate': [0.05, 0.1],
-                'max_depth': [2, 3]
+                'n_estimators': [30, 50, 80],
+                'learning_rate': [0.01, 0.05, 0.1],
+                'max_depth': [1, 2, 3],
+                'subsample': [0.7, 0.8, 1.0],
             }
         elif model_type == 'random_forest':
             model = RandomForestClassifier(random_state=self.random_state)

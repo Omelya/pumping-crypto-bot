@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
 
 
 class EventGenerator:
@@ -112,22 +111,25 @@ class EventGenerator:
         if events_df.empty:
             return pd.DataFrame()
 
-        # Отримання всіх часових міток
+        # Більш ефективний алгоритм: використання векторизованих операцій
         all_timestamps = historical_data.index
+        invalid_timestamps = set()  # Множина для швидкого пошуку
 
-        # Виключення часових міток, які вже є подіями
-        # та часових міток ближче ніж 24 години до подій (щоб уникнути зашумлення)
-        valid_timestamps = []
-        for timestamp in all_timestamps:
-            is_valid = True
-            for event_time in events_df.index:
-                # Перевірка, чи не є ця часова мітка близькою до події
-                time_diff = abs((timestamp - event_time).total_seconds() / 3600)
-                if time_diff < 24:  # 24 години
-                    is_valid = False
-                    break
-            if is_valid:
-                valid_timestamps.append(timestamp)
+        # Визначення часового вікна для виключення (24 години до та після кожної події)
+        for event_time in events_df.index:
+            # Визначаємо часові межі
+            start_time = event_time - pd.Timedelta(hours=24)
+            end_time = event_time + pd.Timedelta(hours=24)
+
+            # Знаходимо індекси, які потрапляють у заборонений діапазон
+            mask = (all_timestamps >= start_time) & (all_timestamps <= end_time)
+            invalid_indices = all_timestamps[mask]
+
+            # Додаємо знайдені часові мітки до множини заборонених
+            invalid_timestamps.update(invalid_indices)
+
+        # Фільтруємо дійсні часові мітки
+        valid_timestamps = [ts for ts in all_timestamps if ts not in invalid_timestamps]
 
         # Розрахунок кількості не-подій
         n_events = len(events_df)
@@ -135,26 +137,32 @@ class EventGenerator:
 
         # Випадковий вибір часових міток для не-подій
         if n_non_events > 0 and valid_timestamps:
+            # Випадковий вибір часових міток
             non_event_timestamps = np.random.choice(valid_timestamps, size=n_non_events, replace=False)
 
-            # Формування даних не-подій
+            # Формування даних не-подій (використовуємо більш ефективний метод)
             non_events = []
             for timestamp in non_event_timestamps:
-                idx = historical_data.index.get_loc(timestamp)
-                non_event_data = {
-                    'timestamp': timestamp,
-                    'start_price': historical_data['close'].iloc[idx],
-                    'event_type': 'non_event',
-                    'is_event': 0
-                }
-                non_events.append(non_event_data)
+                try:
+                    idx = historical_data.index.get_loc(timestamp)
+                    non_event_data = {
+                        'timestamp': timestamp,
+                        'start_price': historical_data['close'].iloc[idx],
+                        'event_type': 'non_event',
+                        'is_event': 0
+                    }
+                    non_events.append(non_event_data)
+                except (KeyError, IndexError):
+                    # Пропускаємо, якщо індекс не знайдено
+                    continue
 
             # Створення DataFrame з не-подіями
-            non_events_df = pd.DataFrame(non_events)
-            non_events_df.set_index('timestamp', inplace=True)
-            return non_events_df
-        else:
-            return pd.DataFrame()
+            if non_events:  # Перевіряємо, чи не порожній список
+                non_events_df = pd.DataFrame(non_events)
+                non_events_df.set_index('timestamp', inplace=True)
+                return non_events_df
+
+        return pd.DataFrame()
 
     def combine_events(self, events_df, non_events_df):
         """

@@ -157,11 +157,6 @@ class AdaptiveBacktester(CryptoBacktester):
                             prev_prediction['is_event'] == 1
                         )
 
-            print(f"Аналіз на {timestamp}: Подія={is_event}, Стандартний={standard_prediction}, " +
-                  f"Адаптивний={adaptive_prediction}, " +
-                  f"Ймов.станд={standard_result['probability_score']:.2f}, " +
-                  f"Ймов.адапт={adaptive_result['probability_score']:.2f}")
-
         # Розрахунок метрик для обох підходів
         if len(y_true) > 0 and len(y_pred) > 0 and len(y_pred_adaptive) > 0:
             # Метрики для стандартного підходу
