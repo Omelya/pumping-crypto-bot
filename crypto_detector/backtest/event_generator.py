@@ -23,10 +23,6 @@ class EventGenerator:
     def generate_events(self, historical_data, window_hours=24):
         """
         Генерація тестових подій на основі історичних даних
-
-        :param historical_data: DataFrame з історичними OHLCV даними
-        :param window_hours: Вікно для аналізу в годинах
-        :return: DataFrame з подіями
         """
         # Перевірка наявності необхідних колонок
         required_columns = ['open', 'high', 'low', 'close', 'volume']
@@ -45,12 +41,21 @@ class EventGenerator:
         data['volatility'] = data['close'].pct_change().rolling(window=int(window_size / 2)).std() * 100
         data['volume_change'] = data['volume'].pct_change(int(window_size / 2)) * 100
 
-        # Знаходження точок з суттєвою зміною ціни
+        # Додамо розрахунок відносного обсягу торгів
+        data['relative_volume'] = data['volume'] / data['volume'].rolling(window=20).mean()
+
+        # Знаходження точок з суттєвою зміною ціни ТА об'єму
         events = []
 
         for i in range(window_size, len(data) - window_size):
-            # Перевірка на PUMP фазу (різке зростання ціни)
-            if data['price_change'].iloc[i] > self.min_price_change:
+            # Покращений критерій для PUMP фази:
+            # 1. Значна зміна ціни
+            # 2. Підвищений об'єм торгів (відносно середнього)
+            # 3. Відносно швидке зростання
+            if (data['price_change'].iloc[i] > self.min_price_change and
+                    data['relative_volume'].iloc[i] > 1.5 and  # Відносний об'єм > 150% від середнього
+                    data['volume_change'].iloc[i] > self.min_volume_change):
+
                 # Перевірка наступних свічок на DUMP
                 forward_window = data.iloc[i:i + window_size]
                 if len(forward_window) >= window_size / 2:
@@ -59,21 +64,33 @@ class EventGenerator:
                     end_price = forward_window['close'].iloc[-1]
                     dump_percent = (end_price / max_price - 1) * 100
 
-                    # Додаткова перевірка на підвищений об'єм
-                    volume_spike = data['volume_change'].iloc[i] > self.min_volume_change
+                    # Додаткові критерії для підтвердження реальної події, а не просто волатильності
+                    price_acceleration = data['price_change'].diff().iloc[i]
+                    consecutive_growth = sum(1 for x in data['price_change'].iloc[i - 3:i + 1] if x > 0)
 
-                    # Визначення типу події
+                    # Чіткіша класифікація подій
                     event_type = 'unknown'
-                    if dump_percent < -self.min_dump_percent:
-                        event_type = 'pump_and_dump'  # Класичний pump-and-dump
-                    elif volume_spike and data['price_change'].iloc[i] > self.min_price_change * 1.5:
-                        event_type = 'pump_only'  # Тільки pump з підвищеним об'ємом
+
+                    # Pump-and-dump: швидке зростання з наступним падінням
+                    if dump_percent < -self.min_dump_percent and consecutive_growth >= 2:
+                        event_type = 'pump_and_dump'
+                    # Pump only: значне зростання з великим об'ємом без суттєвого падіння
+                    elif (data['price_change'].iloc[i] > self.min_price_change * 1.2 and
+                          data['relative_volume'].iloc[i] > 2.0 and
+                          consecutive_growth >= 3):
+                        event_type = 'pump_only'
                     else:
-                        continue  # Пропускаємо події, які не відповідають критеріям
+                        continue  # Пропускаємо події, які не відповідають чітким критеріям
 
                     # Визначення початку події (момент, коли варто виявити підозрілу активність)
-                    # Зазвичай за 24 години до початку pump-фази
-                    event_start_idx = max(0, i - window_size)
+                    # Знаходимо момент початку зростання, а не просто відступаємо на window_size
+                    start_idx = i
+                    for j in range(i - 1, max(0, i - window_size), -1):
+                        if data['price_change'].iloc[j] <= 0:
+                            start_idx = j + 1
+                            break
+
+                    event_start_idx = max(0, start_idx - int(window_size / 4))  # Додаємо невелике вікно перед початком
                     event_start_time = data.index[event_start_idx]
 
                     # Формування даних події
@@ -86,16 +103,49 @@ class EventGenerator:
                         'pump_percent': data['price_change'].iloc[i],
                         'dump_percent': dump_percent,
                         'volume_change': data['volume_change'].iloc[i],
+                        'relative_volume': data['relative_volume'].iloc[i],
+                        'price_acceleration': price_acceleration,
+                        'consecutive_growth': consecutive_growth,
                         'event_type': event_type,
                         'is_event': 1
                     }
                     events.append(event_data)
 
+        # Ця частина повинна бути за межами циклу for! Зверніть увагу на відступ
         # Створення DataFrame з подіями
         if events:
             events_df = pd.DataFrame(events)
             events_df.set_index('timestamp', inplace=True)
-            return events_df
+
+            # Додаткова фільтрація для уникнення дублювання та зосередження на значних подіях
+            # Спочатку сортуємо за pump_percent, щоб залишити найбільш значущі події
+            events_df = events_df.sort_values('pump_percent', ascending=False)
+
+            # Виключаємо події, які відбуваються занадто близько одна до одної
+            unique_events = []
+            excluded_times = set()
+
+            for event_time, event in events_df.iterrows():
+                # Перевірка чи цей час не виключено через близькість до вже відібраної події
+                if event_time not in excluded_times:
+                    unique_events.append((event_time, event))
+
+                    # Додаємо близькі часові мітки до виключених
+                    window_start = event_time - pd.Timedelta(hours=8)  # Було 12 годин
+                    window_end = event_time + pd.Timedelta(hours=8)
+
+                    # Знаходимо і виключаємо близькі події
+                    for t in events_df.index:
+                        if t != event_time and window_start <= t <= window_end:
+                            excluded_times.add(t)
+
+            # Створюємо новий DataFrame з відфільтрованими подіями
+            if unique_events:
+                filtered_times, filtered_events = zip(*unique_events)
+                filtered_df = pd.DataFrame(filtered_events, index=filtered_times)
+                return filtered_df
+            else:
+                return pd.DataFrame()
         else:
             return pd.DataFrame()
 

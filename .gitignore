@@ -1,4 +1,6 @@
 .env
+__pycache__/
+*.pyc
 detector.log
 alerts
 backtest_charts

@@ -1,5 +1,6 @@
 import os
 import json
+from pyexpat import features
 
 import numpy as np
 import pandas as pd
@@ -175,6 +176,8 @@ class AdaptiveCryptoDetector:
             elif signal_name == 'Прискорення зростання об\'єму':
                 volume_accel = base_result['raw_data']['volume'].get('volume_acceleration', 0)
                 confidence += weights[signal_name] * min(volume_accel / 0.2, 1.0)
+
+        features = []
 
         # Обчислюємо ML-оцінку, якщо доступна модель для цієї категорії
         ml_probability = None

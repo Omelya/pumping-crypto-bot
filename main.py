@@ -234,6 +234,11 @@ async def run_monitor(args):
                     logger.debug(
                         f"Нормальна активність для {symbol}, ймовірність: {result['probability_score']:.2f}, поріг: {dynamic_threshold:.2f}")
 
+                alert_file = os.path.join(args.output_dir,
+                                          f"alert_{symbol.replace('/', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+                with open(alert_file, 'w') as f:
+                    import json
+                    json.dump(result, f, indent=4, default=str)
             except Exception as e:
                 logger.error(f"Помилка при аналізі {symbol}: {str(e)}")
                 continue
