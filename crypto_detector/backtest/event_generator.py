@@ -26,6 +26,7 @@ class EventGenerator:
         """
         # Перевірка наявності необхідних колонок
         required_columns = ['open', 'high', 'low', 'close', 'volume']
+
         if not all(col in historical_data.columns for col in required_columns):
             raise ValueError(f"Дані повинні містити колонки: {required_columns}")
 
@@ -111,8 +112,6 @@ class EventGenerator:
                     }
                     events.append(event_data)
 
-        # Ця частина повинна бути за межами циклу for! Зверніть увагу на відступ
-        # Створення DataFrame з подіями
         if events:
             events_df = pd.DataFrame(events)
             events_df.set_index('timestamp', inplace=True)
@@ -143,6 +142,7 @@ class EventGenerator:
             if unique_events:
                 filtered_times, filtered_events = zip(*unique_events)
                 filtered_df = pd.DataFrame(filtered_events, index=filtered_times)
+
                 return filtered_df
             else:
                 return pd.DataFrame()

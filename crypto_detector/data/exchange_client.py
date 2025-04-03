@@ -48,7 +48,7 @@ class ExchangeClient:
             'enableRateLimit': True,  # Важливо для запобігання банам за API ліміти
             'timeout': 30000,  # Таймаут 30 секунд
             'options': {
-                'defaultType': 'spot',  # За замовчуванням - спотовий ринок
+                'defaultType': 'future',  # За замовчуванням - фʼючерсний ринок
             }
         })
 

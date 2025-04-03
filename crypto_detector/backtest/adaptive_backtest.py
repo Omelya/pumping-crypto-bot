@@ -42,14 +42,12 @@ class AdaptiveBacktester(CryptoBacktester):
         :param window_hours: Вікно для аналізу в годинах
         :return: Результати бектестингу
         """
-        # Запускаємо стандартний бектестинг для порівняння
         standard_results = await super().backtest_algorithm(symbol, start_date, end_date, min_price_change,
                                                             window_hours)
 
         if standard_results is None:
             return None
 
-        # Завантаження даних (вже завантажені в стандартному бектестингу)
         data_file = os.path.join(
             self.data_dir,
             'currency',
@@ -58,63 +56,57 @@ class AdaptiveBacktester(CryptoBacktester):
         )
 
         historical_data = self.load_historical_data(data_file)
+
         if historical_data is None:
             return None
 
-        # Генерація тестових подій
         events_df = self.generate_test_events(historical_data, min_price_change, window=int(window_hours * 12))
 
         if events_df.empty:
             print("Не знайдено тестових подій")
             return None
 
-        # Тестові точки
         test_timestamps = []
 
-        # Додавання подій як тестових точок
         for event_time in events_df.index:
             test_timestamps.append(event_time)
 
-        # Додавання випадкових точок, які не є подіями (з кращим балансом)
         non_event_times = historical_data.index.difference(events_df.index)
+
         if len(non_event_times) > len(events_df):
-            # Для кращого балансу класів
             balance_ratio = 1.5
+
             random_non_events = np.random.choice(non_event_times,
                                                  size=min(int(len(events_df) * balance_ratio), len(non_event_times)),
                                                  replace=False)
+
             test_timestamps.extend(random_non_events)
 
-        # Сортування часових міток для послідовного аналізу
         test_timestamps.sort()
 
-        # Бектестинг на кожній тестовій точці з адаптивним навчанням
         y_true = []
         y_pred = []
-        y_pred_adaptive = []  # Окремо для адаптивного підходу
+        y_pred_adaptive = []
         predictions = []
 
-        # Динамічний поріг для класифікації
         standard_threshold = self.get_prediction_threshold(symbol)
         adaptive_threshold = self.adaptive_detector.get_optimized_threshold(symbol)
 
         print(f"Порівняння порогів для {symbol}: стандартний {standard_threshold}, адаптивний {adaptive_threshold}")
 
-        # Запуск адаптивного бектестингу
         for i, timestamp in enumerate(test_timestamps):
-            # Визначення чи є ця точка подією
             is_event = 1 if timestamp in events_df.index else 0
             y_true.append(is_event)
 
-            # Підготовка даних для аналізу
             cutoff_time = timestamp
             data_window = historical_data[:cutoff_time].tail(int(window_hours * 12))
 
-            # Перевірка наявності достатньої кількості даних
             if len(data_window) < window_hours:
                 print(f"Недостатньо даних для аналізу на {timestamp}")
+
                 y_pred.append(0)
                 y_pred_adaptive.append(0)
+
                 continue
 
             # Виклик стандартного методу аналізу
@@ -143,14 +135,13 @@ class AdaptiveBacktester(CryptoBacktester):
                 'adaptive_signals': adaptive_result['signals']
             })
 
-            # Якщо це не перші точки, надаємо зворотний зв'язок для адаптивного навчання
-            if i >= 10:  # Даємо деякий початковий набір даних
-                # Перевіряємо, чи вистачає даних для навчання
+            if i >= 10:
                 if len(predictions) >= 10:
-                    # Обмежуємо індекс, щоб не вийти за межі масиву
-                    feedback_count = min(10, i)  # Не більше 10 зразків і не більше ніж поточний індекс
+                    feedback_count = min(10, i)
+
                     for idx in range(max(0, len(predictions) - feedback_count), len(predictions)):
                         prev_prediction = predictions[idx]
+
                         self.adaptive_detector.provide_feedback(
                             symbol,
                             prev_prediction['timestamp'],
@@ -214,11 +205,12 @@ class AdaptiveBacktester(CryptoBacktester):
             optimized_weights = self.adaptive_detector.get_weights_for_token(symbol)
 
             print(f"\nОптимізовані ваги для категорії '{category}':")
+
             for signal, weight in optimized_weights.items():
                 print(f"{signal:<45}: {weight:.3f}")
 
-            # Створюємо директорії для збереження даних ML
             ml_data_dir = os.path.join(self.data_dir, "ml_data")
+
             if not os.path.exists(ml_data_dir):
                 os.makedirs(ml_data_dir)
 
@@ -226,6 +218,7 @@ class AdaptiveBacktester(CryptoBacktester):
             ml_data = pd.DataFrame(predictions)
             ml_data_file = os.path.join(ml_data_dir, f"{symbol.replace('/', '_')}_adaptive_ml_data.csv")
             ml_data.to_csv(ml_data_file, index=False)
+
             print(f"Дані для машинного навчання збережені у {ml_data_file}")
 
             return adaptive_results
@@ -428,13 +421,12 @@ class AdaptiveBacktester(CryptoBacktester):
         """
         print("\nЗапуск навчання ML моделей на основі результатів бектестингу...")
 
-        # Перевірка наявності директорії для ML даних
         ml_data_dir = os.path.join(self.data_dir, "ml_data")
+
         if not os.path.exists(ml_data_dir):
             print(f"Директорія {ml_data_dir} не існує. Неможливо навчити моделі.")
             return
 
-        # Отримання списку всіх CSV файлів у директорії ML даних
         ml_files = [f for f in os.listdir(ml_data_dir) if f.endswith('_adaptive_ml_data.csv')]
 
         if not ml_files:
@@ -443,28 +435,22 @@ class AdaptiveBacktester(CryptoBacktester):
 
         print(f"Знайдено {len(ml_files)} файлів з даними для навчання.")
 
-        # Для кожного файлу готуємо дані для відповідного символу/категорії
         for ml_file in ml_files:
-            # Отримання символу з імені файлу
             symbol = ml_file.replace('_adaptive_ml_data.csv', '').replace('_', '/')
 
-            # Визначення категорії токена
             category = self.adaptive_detector._get_token_category(symbol)
 
             print(f"\nПідготовка навчання моделі для {symbol} (категорія: {category})...")
 
-            # Повний шлях до файлу
             ml_data_path = os.path.join(ml_data_dir, ml_file)
 
             try:
-                # Навчання моделі для цієї категорії
                 self._train_model_for_category(ml_data_path, category, symbol)
             except Exception as e:
                 print(f"Помилка при навчанні моделі для {symbol}: {str(e)}")
 
         print("\nЗавершення навчання ML моделей. Збереження результатів...")
 
-        # Збереження всіх навчених моделей і ваг
         if hasattr(self.adaptive_detector, '_save_weights'):
             self.adaptive_detector._save_weights()
 
@@ -486,11 +472,12 @@ class AdaptiveBacktester(CryptoBacktester):
         try:
             # Підготовка даних
             raw_data = self._load_and_preprocess_data(ml_data_path)
+
             if raw_data is None:
                 return
 
             # Підготовка фіч для навчання моделі
-            X, y = self._prepare_features(raw_data, ml_data_path)
+            X, y = self._prepare_features(ml_data_path)
             if X is None or len(X) < 30:
                 print(
                     f"Недостатньо даних для навчання моделі: {len(X) if X is not None else 0} зразків. Потрібно мінімум 30.")
@@ -543,18 +530,19 @@ class AdaptiveBacktester(CryptoBacktester):
             print(f"Помилка при завантаженні та обробці даних: {str(e)}")
             return None
 
-    def _prepare_features(self, raw_data, ml_data_path):
+    def _prepare_features(self, ml_data_path):
         """
         Підготовка фіч для навчання моделі
 
-        :param raw_data: Завантажені дані
         :param ml_data_path: Шлях до файлу з даними
         :return: Кортеж (X, y) підготовлених фіч та міток або (None, None) у випадку помилки
         """
         try:
             preprocessed_file = ml_data_path.replace('.csv', '_preprocessed.csv')
             print("Передаємо дані в MLTrainer для обробки...")
+
             X, y = self.adaptive_detector.ml_trainer.prepare_features(preprocessed_file)
+
             print(f"Підготовлено {len(X)} зразків для навчання.")
             return X, y
         except Exception as e:
@@ -808,7 +796,7 @@ class AdaptiveBacktester(CryptoBacktester):
             print(f"Оновлення ваг сигналів для категорії {category}...")
             try:
                 # Оновлюємо ваги через SignalWeightsManager
-                updated_weights = self.adaptive_detector.weights_manager.update_weights(
+                self.adaptive_detector.weights_manager.update_weights(
                     category, correct_predictions, wrong_predictions
                 )
 

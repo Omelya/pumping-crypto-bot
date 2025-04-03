@@ -1,6 +1,5 @@
 import os
 import json
-from pyexpat import features
 
 import numpy as np
 import pandas as pd
@@ -21,7 +20,7 @@ class AdaptiveCryptoDetector:
     використання ML моделей для покращення точності виявлення.
     """
 
-    def __init__(self, base_detector, model_dir="models"):
+    def __init__(self, base_detector, model_dir="data/models"):
         """
         Ініціалізація адаптивного детектора
 
@@ -177,36 +176,57 @@ class AdaptiveCryptoDetector:
                 volume_accel = base_result['raw_data']['volume'].get('volume_acceleration', 0)
                 confidence += weights[signal_name] * min(volume_accel / 0.2, 1.0)
 
-        features = []
+            elif signal_name == 'Вертикальний стрибок ціни':
+                jump_percent = base_result['raw_data']['price'].get('jump_percent', 0)
+                confidence += weights[signal_name] * min(jump_percent / 50, 1.0)
 
-        # Обчислюємо ML-оцінку, якщо доступна модель для цієї категорії
+            elif signal_name == 'V-подібний патерн ціни':
+                confidence += weights[signal_name]
+
+            elif signal_name == 'Велика зелена свічка з довгим тілом':
+                candle_body_percent = base_result['raw_data']['price'].get('candle_body_percent', 0)
+                confidence += weights[signal_name] * min(candle_body_percent / 15, 1.0)
+
+            elif signal_name == 'Сильна кореляційна група':
+                correlated_coins = len(base_result['raw_data']['correlation'].get('correlated_coins', []))
+                confidence += weights[signal_name] * min(correlated_coins / 5, 1.0)
+
+            elif signal_name == 'Синхронізований pump у групі монет':
+                price_change = base_result['raw_data']['correlation'].get('price_change_1h', 0)
+                confidence += weights[signal_name] * min(price_change / 15, 1.0)
+
+            elif signal_name in ['Виявлено стіну ордерів купівлі', 'Виявлено стіну ордерів продажу']:
+                confidence += weights[signal_name]
+
+            elif signal_name == 'Висока концентрація об\'єму':
+                volume_concentration = base_result['raw_data']['order_book'].get('volume_concentration', 1.0)
+                confidence += weights[signal_name] * min(volume_concentration / 4, 1.0)
+
+        features = []
         ml_probability = None
+
         if category in self.ml_models:
             try:
-                # Витягуємо ознаки і перевіряємо їх розмірність
                 features = self._extract_features_from_result(base_result)
 
-                # Додаємо діагностичний вивід
                 print(f"Extracted {len(features)} features for ML prediction")
 
-                # Трансформація в numpy масив для моделі
                 features_array = np.array(features).reshape(1, -1)
 
-                # Перевірка чи відповідає розмірність очікуваній
-                expected_features = 16
+                expected_features = 33
+
                 if features_array.shape[1] != expected_features:
                     print(
                         f"WARNING: Feature count mismatch before prediction - got {features_array.shape[1]}, expected {expected_features}")
 
-                    # Приведення до правильної довжини (це має бути резервний варіант)
                     if features_array.shape[1] > expected_features:
                         features_array = features_array[:, :expected_features]
                     else:
                         features_array = np.pad(features_array,
                                                 ((0, 0), (0, expected_features - features_array.shape[1])), 'constant')
 
-                # Отримання передбачення
                 ml_probability = self.ml_models[category].predict_proba(features_array)[0][1]
+
                 print(f"ML prediction successful, probability: {ml_probability:.4f}")
 
             except Exception as e:
@@ -290,7 +310,8 @@ class AdaptiveCryptoDetector:
             orderbook_data.get('buy_sell_ratio', 1.0),
             orderbook_data.get('top_concentration', 0),
             1 if orderbook_data.get('has_buy_wall', False) else 0,
-            1 if orderbook_data.get('has_sell_wall', False) else 0
+            1 if orderbook_data.get('has_sell_wall', False) else 0,
+            orderbook_data.get('volume_concentration', 1.0)
         ])
 
         # Ознаки соціальних даних
@@ -310,13 +331,38 @@ class AdaptiveCryptoDetector:
 
         # Ознаки кореляції ринків
         correlation_data = result['raw_data']['correlation']
-        features.append(1 if correlation_data.get('correlation_signal', False) else 0)
+        features.extend([
+            1 if correlation_data.get('correlation_signal', False) else 0,
+            len(correlation_data.get('correlated_coins', [])),
+            1 if correlation_data.get('correlation_type') == 'pump_group' else 0,
+            correlation_data.get('correlation_strength', 0.0)
+        ])
 
-        # Перевірка на правильну кількість ознак
-        expected_features = 16
+        # Вертикальний стрибок ціни
+        vertical_jump = 1 if price_data.get('vertical_price_jump', False) else 0
+        jump_percent = price_data.get('jump_percent', 0) / 100  # Нормалізація
+
+        # V-подібний патерн
+        v_pattern = 1 if price_data.get('v_pattern_detected', False) else 0
+
+        # Велика зелена свічка
+        large_green_candle = 1 if price_data.get('large_green_candle', False) else 0
+        candle_body_percent = price_data.get('candle_body_percent', 0) / 100  # Нормалізація
+
+        # Додавання нових ознак до загального списку
+        features.extend([
+            vertical_jump,
+            jump_percent,
+            v_pattern,
+            large_green_candle,
+            candle_body_percent,
+        ])
+
+        expected_features = 33
+
         if len(features) != expected_features:
             print(f"WARNING: Feature count mismatch - got {len(features)}, expected {expected_features}")
-            # Приведення до правильної довжини для сумісності з моделлю
+
             if len(features) > expected_features:
                 features = features[:expected_features]
             else:
@@ -335,7 +381,6 @@ class AdaptiveCryptoDetector:
         category = self._get_token_category(symbol)
 
         if category in self.training_history:
-            # Шукаємо відповідний запис в історії
             for entry in self.training_history[category]:
                 if entry['symbol'] == symbol and (
                         datetime.fromisoformat(timestamp) - entry['timestamp']).total_seconds() < 300:
@@ -343,11 +388,10 @@ class AdaptiveCryptoDetector:
                     print(f"Додано зворотний зв'язок для {symbol} на {timestamp}: {is_event}")
                     break
 
-            # Перевіряємо, чи достатньо даних для адаптації ваг
             self._update_weights_using_manager(category)
 
-            # Перевіряємо, чи треба перенавчити ML модель
             labeled_entries = [e for e in self.training_history[category] if e['actual_event'] is not None]
+
             if len(labeled_entries) >= self.retraining_interval:
                 self._train_ml_model_with_trainer(category)
 
@@ -395,52 +439,61 @@ class AdaptiveCryptoDetector:
         """
         # Перетворюємо дані історії в придатний для навчання формат
         labeled_entries = [e for e in self.training_history[category] if e['actual_event'] is not None]
+
         if len(labeled_entries) < self.retraining_interval:
             return
 
         print(f"Підготовка даних для навчання ML моделі категорії {category}...")
 
-        # Створюємо DataFrame з ознаками та мітками
         features_list = [e['features'] for e in labeled_entries]
         labels = [1 if e['actual_event'] else 0 for e in labeled_entries]
 
-        # Переконуємося, що всі фічі мають стандартну довжину
-        expected_features = 16
+        expected_features = 33
         standardized_features = []
 
         for features in features_list:
-            # Переконуємося, що маємо правильну кількість ознак
             if len(features) != expected_features:
                 print(f"Adjusting feature count: {len(features)} -> {expected_features}")
+
                 if len(features) > expected_features:
                     features = features[:expected_features]
                 else:
                     features = features + [0] * (expected_features - len(features))
+
             standardized_features.append(features)
 
-        # Створення директорії для тимчасових даних, якщо вона не існує
         temp_dir = os.path.join(self.model_dir, "temp")
+
         if not os.path.exists(temp_dir):
             os.makedirs(temp_dir)
 
-        # Зберігаємо дані у тимчасовий CSV
         training_data = pd.DataFrame(standardized_features)
         training_data['is_event'] = labels
 
-        # Додаємо назви ознак для зрозумілості
         feature_names = [
+            # Ознаки об'єму (4)
             'volume_percent_change', 'volume_z_score', 'volume_anomaly_count', 'volume_acceleration',
-            'price_change_1h', 'price_change_24h', 'volatility_ratio', 'large_candles', 'consecutive_up',
-            'price_acceleration',
-            'buy_sell_ratio', 'top_concentration', 'has_buy_wall', 'has_sell_wall',
-            'social_percent_change', 'social_growth_acceleration'
+            # Ознаки ціни (6)
+            'price_change_1h', 'price_change_24h', 'volatility_ratio', 'large_candles',
+            'consecutive_up', 'price_acceleration',
+            # Додаткові ознаки pump-and-dump (4)
+            'distance_from_high', 'dump_phase', 'significant_pump', 'price_above_ema',
+            # Ознаки книги ордерів (4)
+            'buy_sell_ratio', 'top_concentration', 'has_buy_wall', 'has_sell_wall', 'volume_concentration',
+            # Ознаки соціальних даних (2)
+            'social_percent_change', 'social_growth_acceleration',
+            # Ознаки часових патернів (3)
+            'time_risk_score', 'is_high_risk_hour', 'is_weekend',
+            # Ознака кореляції (1)
+            'correlation_signal', 'correlated_coins_count', 'correlation_type_pump_group', 'correlation_strength',
+            # Нові ознаки патернів (5)
+            'vertical_jump', 'jump_percent', 'v_pattern', 'large_green_candle', 'candle_body_percent'
         ]
 
-        # Перевіряємо чи кількість назв відповідає кількості колонок (мінус колонка з мітками)
         if len(feature_names) != training_data.shape[1] - 1:
             print(
                 f"WARNING: Feature names count ({len(feature_names)}) doesn't match data columns ({training_data.shape[1] - 1})")
-            # Додаємо або видаляємо назви ознак для відповідності
+
             if len(feature_names) < training_data.shape[1] - 1:
                 for i in range(len(feature_names), training_data.shape[1] - 1):
                     feature_names.append(f'feature_{i}')
@@ -449,7 +502,7 @@ class AdaptiveCryptoDetector:
 
         # Перейменовуємо колонки
         column_mapping = {i: name for i, name in enumerate(feature_names)}
-        column_mapping[training_data.shape[1] - 1] = 'is_event'  # Остання колонка - мітки
+        column_mapping[training_data.shape[1] - 1] = 'is_event'
         training_data = training_data.rename(columns=column_mapping)
 
         # Зберігаємо дані у тимчасовий файл
@@ -458,56 +511,49 @@ class AdaptiveCryptoDetector:
 
         print(f"Навчання моделі для категорії {category} з {len(labeled_entries)} зразків...")
 
-        # Навчання моделі з використанням MLTrainer
         try:
-            # Підготовка даних
             X, y = self.ml_trainer.prepare_features(training_file)
 
-            # Переконуємося у правильній кількості ознак
             if X.shape[1] != expected_features:
                 print(
                     f"WARNING: Features shape after prepare_features: {X.shape}, expected ({len(labeled_entries)}, {expected_features})")
-                # Використовуємо функцію коригування ознак
+
                 X = self.ml_trainer.prepare_model_features(X)
                 print(f"Features shape after adjustment: {X.shape}")
 
-            # Спочатку спробуємо знайти оптимальні гіперпараметри
             print(f"Оптимізація гіперпараметрів для {category}...")
             best_params, _ = self.ml_trainer.optimize_hyperparameters(X, y, model_type='gradient_boosting',
                                                                       category=category)
 
-            # Навчання моделі з оптимальними параметрами
             print(f"Тренування моделі для {category} з оптимальними параметрами: {best_params}")
+
             model, info = self.ml_trainer.train_model(X, y, model_type='gradient_boosting', category=category,
                                                       **best_params)
 
-            # Збереження найкращих параметрів для використання у майбутньому
             model_params_file = os.path.join(self.model_dir, f"{category}_best_params.json")
+
             with open(model_params_file, 'w') as f:
                 json.dump(best_params, f, indent=4)
 
-            # Зберігаємо натреновану модель
             self.ml_models[category] = model
             self._save_ml_model(category)
 
-            # Візуалізація важливості фічей
             charts_dir = os.path.join(self.model_dir, "charts")
+
             if not os.path.exists(charts_dir):
                 os.makedirs(charts_dir)
 
-            # Збереження графіка з важливістю фічей
             self.ml_trainer.visualize_feature_importance(
                 info['feature_importance'],
                 title=f"Feature Importance for {category}",
                 top_n=20
             )
 
-            # Проведення крос-валідації та звітування
             cv_report, _ = self.ml_trainer.cross_validate_and_report(X, y, model_type='gradient_boosting',
                                                                      category=category, **best_params)
 
-            # Збереження звіту
             report_file = os.path.join(charts_dir, f"{category}_ml_report.json")
+
             with open(report_file, 'w') as f:
                 json.dump(cv_report, f, indent=4, default=str)
 
@@ -520,7 +566,6 @@ class AdaptiveCryptoDetector:
             import traceback
             traceback.print_exc()
 
-        # Очищаємо історію, залишаючи останні 50 записів для наступного навчання
         self.training_history[category] = self.training_history[category][-50:]
 
     def get_optimized_threshold(self, symbol):
@@ -560,6 +605,18 @@ class AdaptiveCryptoDetector:
         # Аналіз цінової динаміки
         price_analysis = await self.base_detector.price_analyzer.analyze_historical_price(data_window)
 
+        # Виявлення нових патернів
+        vertical_jump, jump_percent = self.base_detector.price_analyzer.detect_vertical_price_jump(data_window)
+        v_pattern_detected = self.base_detector.price_analyzer.detect_v_pattern(data_window)
+        large_green_candle, candle_body_percent = self.base_detector.price_analyzer.detect_large_candles(data_window)
+
+        # Додаємо результати до price_analysis
+        price_analysis['vertical_price_jump'] = vertical_jump
+        price_analysis['jump_percent'] = jump_percent
+        price_analysis['v_pattern_detected'] = v_pattern_detected
+        price_analysis['large_green_candle'] = large_green_candle
+        price_analysis['candle_body_percent'] = candle_body_percent
+
         # Додаткові розрахунки для прискорення об'єму
         if not data_window.empty and len(data_window) >= 6:
             data_window['volume_change'] = data_window['volume'].pct_change()
@@ -569,10 +626,7 @@ class AdaptiveCryptoDetector:
             volume_analysis['volume_acceleration'] = 0
 
         # Імітація аналізу книги ордерів
-        order_book_analysis = {
-            'order_book_signal': False,
-            'buy_sell_ratio': 1.0
-        }
+        order_book_analysis = await self.base_detector.orderbook_analyzer._analyze_historical_orderbook(timestamp, data_window)
 
         # Імітація соціальних даних
         social_data = {
@@ -581,6 +635,11 @@ class AdaptiveCryptoDetector:
             'average_mentions': 0,
             'percent_change': 0
         }
+
+        # Імітація даних кореляції
+        correlation_data = await self._analyze_historical_correlation(
+            self.base_detector, symbol, timestamp, data_window
+        )
 
         # Імітація часових патернів
         time_of_day = pd.Timestamp(timestamp).hour
@@ -622,7 +681,43 @@ class AdaptiveCryptoDetector:
             confidence += weights.get('Активна цінова динаміка', 0.25) * min(
                 abs(price_analysis['recent_price_change']) / 8, 1.0)
 
-        # Сигнал 3: Прискорення об'єму
+        # Сигнал 3: Дисбаланс книги ордерів
+        if order_book_analysis['order_book_signal']:
+            signals.append({
+                'name': 'Дисбаланс книги ордерів',
+                'description': f"Співвідношення ордерів купівлі/продажу: {order_book_analysis['buy_sell_ratio']:.2f}",
+                'weight': 0.2
+            })
+            ratio = order_book_analysis['buy_sell_ratio']
+
+            if ratio == 0:
+                confidence += 0.2
+            elif ratio > 1:
+                confidence += 0.2 * min(ratio / 1.7, 1.0)
+            else:
+                confidence += 0.2 * min(1 / ratio / 1.7, 1.0)
+
+        # Сигнал 5: Часовий патерн
+        if time_pattern_data['time_pattern_signal']:
+            signals.append({
+                'name': 'Підозрілий часовий патерн',
+                'description': f"Поточний час відповідає високоризиковому періоду для pump-and-dump схем",
+                'weight': weights.get('Підозрілий часовий патерн', 0.15)
+            })
+            confidence += weights.get('Підозрілий часовий патерн', 0.15) * time_pattern_data['time_risk_score']
+
+        # Сигнал 6: Кореляція з іншими ринками
+        if correlation_data['correlation_signal']:
+            correlated_coins = ', '.join(correlation_data['correlated_coins']) if correlation_data[
+                'correlated_coins'] else "немає даних"
+            signals.append({
+                'name': 'Корельована активність з іншими монетами',
+                'description': f"Виявлено схожу активність на інших монетах: {correlated_coins}",
+                'weight': 0.15
+            })
+            confidence += 0.15
+
+        # Сигнал 7: Прискорення об'єму
         if volume_analysis.get('volume_acceleration', 0) > 0.05:
             signals.append({
                 'name': 'Прискорення зростання об\'єму',
@@ -632,14 +727,81 @@ class AdaptiveCryptoDetector:
             confidence += weights.get('Прискорення зростання об\'єму', 0.25) * min(
                 volume_analysis['volume_acceleration'] / 0.15, 1.0)
 
-        # Сигнал 4: Часовий патерн
-        if time_pattern_data['time_pattern_signal']:
+        # Сигнал 8: Значна зміна ціни за 24 години
+        if price_analysis.get('price_change_24h', 0) > 50:
             signals.append({
-                'name': 'Підозрілий часовий патерн',
-                'description': f"Поточний час відповідає високоризиковому періоду для pump-and-dump схем",
-                'weight': weights.get('Підозрілий часовий патерн', 0.15)
+                'name': 'Значна зміна ціни за 24 години',
+                'description': f"Ціна зросла на {price_analysis['price_change_24h']:.2f}% за останні 24 години",
+                'weight': 0.40
             })
-            confidence += weights.get('Підозрілий часовий патерн', 0.15) * time_pattern_data['time_risk_score']
+            confidence += 0.40 * min(price_analysis['price_change_24h'] / 100, 1.0)
+
+        # Сигнал 9: Виявлено dump фазу після pump
+        if price_analysis.get('dump_phase', False):
+            signals.append({
+                'name': 'Dump фаза після pump',
+                'description': f"Ціна знизилась на {abs(price_analysis['distance_from_high']):.2f}% від нещодавнього піку",
+                'weight': 0.35
+            })
+            confidence += 0.35 * min(abs(price_analysis['distance_from_high']) / 30, 1.0)
+
+        # Новий сигнал 10: Вертикальний стрибок ціни
+        if price_analysis.get('vertical_price_jump', False):
+            signals.append({
+                'name': 'Вертикальний стрибок ціни',
+                'description': f"Виявлено вертикальне зростання ціни на {price_analysis.get('jump_percent', 0):.2f}% за короткий період",
+                'weight': weights.get('Вертикальний стрибок ціни', 0.40)
+            })
+            confidence += weights.get('Вертикальний стрибок ціни', 0.40) * min(
+                price_analysis.get('jump_percent', 0) / 50, 1.0)
+
+        # Новий сигнал 11: Паттерн V-подібного руху ціни
+        if price_analysis.get('v_pattern_detected', False):
+            signals.append({
+                'name': 'V-подібний патерн ціни',
+                'description': f"Виявлено швидке зростання і падіння ціни без консолідації",
+                'weight': weights.get('V-подібний патерн ціни', 0.35)
+            })
+            confidence += weights.get('V-подібний патерн ціни', 0.35)
+
+        # Новий сигнал 12: Велика зелена свічка з довгим тілом
+        if price_analysis.get('large_green_candle', False):
+            signals.append({
+                'name': 'Велика зелена свічка з довгим тілом',
+                'description': f"Тіло свічки складає {price_analysis.get('candle_body_percent', 0):.2f}% від ціни",
+                'weight': weights.get('Велика зелена свічка з довгим тілом', 0.30)
+            })
+            confidence += weights.get('Велика зелена свічка з довгим тілом', 0.30) * min(
+                price_analysis.get('candle_body_percent', 0) / 15, 1.0)
+
+        # Сигнал 13: Сильна кореляційна група
+        if correlation_data.get('correlated_coins') and len(correlation_data['correlated_coins']) >= 3:
+            signals.append({
+                'name': 'Сильна кореляційна група',
+                'description': f"Монета входить до групи з {len(correlation_data['correlated_coins']) + 1} корельованих активів",
+                'weight': 0.25
+            })
+            confidence += 0.25 * min(len(correlation_data['correlated_coins']) / 5, 1.0)
+
+        # Сигнал 14: Синхронізований pump у кореляційній групі
+        if (correlation_data.get('correlation_type') == 'pump_group' and
+                correlation_data.get('price_change_1h', 0) > 5.0):
+            signals.append({
+                'name': 'Синхронізований pump у групі монет',
+                'description': f"Виявлено синхронний pump з іншими монетами, зміна ціни: {correlation_data.get('price_change_1h', 0):.2f}%",
+                'weight': 0.35
+            })
+            confidence += 0.35 * min(correlation_data.get('price_change_1h', 0) / 15, 1.0)
+
+        # Сигнал 15: Наявність стіни ордерів
+        if order_book_analysis.get('has_buy_wall', False) or order_book_analysis.get('has_sell_wall', False):
+            wall_type = "купівлі" if order_book_analysis.get('has_buy_wall', False) else "продажу"
+            signals.append({
+                'name': f'Виявлено стіну ордерів {wall_type}',
+                'description': f"Значна концентрація ліквідності виявлена у книзі ордерів",
+                'weight': 0.25
+            })
+            confidence += 0.25
 
         # Формування результату
         result = {
@@ -652,7 +814,8 @@ class AdaptiveCryptoDetector:
                 'price': price_analysis,
                 'time_pattern': time_pattern_data,
                 'order_book': order_book_analysis,
-                'social': social_data
+                'social': social_data,
+                'correlation': correlation_data
             }
         }
 
@@ -670,21 +833,18 @@ class AdaptiveCryptoDetector:
             print(f"Немає моделі для категорії {category}")
             return None
 
-        # Використання тестових даних або останніх записів з історії
         if test_data is None:
             labeled_entries = [e for e in self.training_history.get(category, []) if e['actual_event'] is not None]
             if len(labeled_entries) < 10:
                 print(f"Недостатньо даних для оцінки моделі категорії {category}")
                 return None
 
-            # Використовуємо останні 20% записів як тестові дані
             split_idx = int(len(labeled_entries) * 0.8)
             test_entries = labeled_entries[split_idx:]
 
             features = [e['features'] for e in test_entries]
             true_labels = [1 if e['actual_event'] else 0 for e in test_entries]
         else:
-            # Якщо надані тестові дані, використовуємо їх
             try:
                 X, y = self.ml_trainer.prepare_features(test_data)
                 features = X
@@ -693,29 +853,23 @@ class AdaptiveCryptoDetector:
                 print(f"Помилка при підготовці тестових даних: {str(e)}")
                 return None
 
-        # Отримання передбачень моделі
         model = self.ml_models[category]
 
         try:
-            # Отримання ймовірностей та передбачень
             probabilities = model.predict_proba(features)[:, 1]
 
-            # Використання оптимального порогу
             optimal_threshold = self.weights_manager.find_optimal_threshold(
                 self.training_history.get(category, []), category)[0]
 
-            # Якщо не вдалося отримати оптимальний поріг, використовуємо стандартний
             if not optimal_threshold:
                 optimal_threshold = 0.5
 
             predictions = [1 if p > optimal_threshold else 0 for p in probabilities]
 
-            # Розрахунок метрик
             precision = precision_score(true_labels, predictions, zero_division=0)
             recall = recall_score(true_labels, predictions, zero_division=0)
             f1 = f1_score(true_labels, predictions, zero_division=0)
 
-            # Формування результату
             metrics = {
                 'precision': precision,
                 'recall': recall,
@@ -944,3 +1098,136 @@ class AdaptiveCryptoDetector:
                 print(f"Помилка при оцінці моделі категорії {category}: {str(e)}")
 
         return metrics
+
+    async def _analyze_historical_correlation(self, detector, symbol, timestamp, data_window):
+        """
+        Аналіз кореляції на історичних даних
+
+        :param detector: Екземпляр CryptoActivityDetector
+        :param symbol: Символ криптовалюти
+        :param timestamp: Часова мітка аналізу
+        :param data_window: Поточне вікно даних
+        :return: Результат аналізу кореляції
+        """
+        # Перевіряємо наявність необхідних атрибутів
+        if not hasattr(detector, 'correlation_analyzer') or not hasattr(detector, 'historical_data'):
+            return {
+                'correlation_signal': False,
+                'correlated_coins': [],
+                'correlation_type': 'normal'
+            }
+
+        try:
+            # Отримання часової мітки як об'єкту datetime
+            if isinstance(timestamp, str):
+                timestamp = pd.Timestamp(timestamp).to_pydatetime()
+            elif isinstance(timestamp, pd.Timestamp):
+                timestamp = timestamp.to_pydatetime()
+
+            # Визначаємо часові межі для аналізу (3 години до і 1 година після)
+            start_time = timestamp - pd.Timedelta(hours=3)
+            end_time = timestamp + pd.Timedelta(hours=1)
+
+            # Отримуємо список символів, для яких є історичні дані
+            available_symbols = list(detector.historical_data.keys())
+
+            if not available_symbols or symbol not in available_symbols:
+                return {
+                    'correlation_signal': False,
+                    'correlated_coins': [],
+                    'correlation_type': 'normal'
+                }
+
+            # Отримуємо зміну ціни для поточного символу за останню годину
+            if not data_window.empty and len(data_window) > 5:
+                last_hour_data = data_window.iloc[-12:]  # Останні 12 5-хвилинних інтервалів = 1 година
+                if len(last_hour_data) >= 2:
+                    price_change = (last_hour_data['close'].iloc[-1] / last_hour_data['close'].iloc[0] - 1) * 100
+                else:
+                    price_change = 0
+            else:
+                price_change = 0
+
+            # Виявляємо різке зростання ціни (pump)
+            pump_threshold = 5.0  # Поріг для визначення pump (5% за годину)
+            pump_signal = price_change >= pump_threshold
+
+            if not pump_signal:
+                return {
+                    'correlation_signal': False,
+                    'correlated_coins': [],
+                    'correlation_type': 'normal',
+                    'price_change_1h': price_change
+                }
+
+            # Аналіз кореляції з іншими символами
+            correlated_coins = []
+
+            for other_symbol in available_symbols:
+                if other_symbol == symbol:
+                    continue
+
+                # Отримуємо дані для іншого символу
+                if other_symbol in detector.historical_data:
+                    other_data = detector.historical_data[other_symbol]
+
+                    # Фільтруємо дані за часовим проміжком
+                    if isinstance(other_data.index, pd.DatetimeIndex):
+                        filtered_data = other_data[(other_data.index >= start_time) & (other_data.index <= end_time)]
+                    else:
+                        # Якщо індекс не datetime, пропускаємо цей символ
+                        continue
+
+                    if filtered_data.empty or len(filtered_data) < 5:
+                        continue
+
+                    # Обчислюємо зміну ціни для іншого символу
+                    other_last_hour = filtered_data.iloc[-12:]  # Останні 12 5-хвилинних інтервалів
+                    if len(other_last_hour) < 2:
+                        continue
+
+                    other_price_change = (other_last_hour['close'].iloc[-1] / other_last_hour['close'].iloc[
+                        0] - 1) * 100
+
+                    # Визначаємо кореляцію на основі синхронних цінових рухів
+                    if other_price_change >= pump_threshold * 0.7:  # Допускаємо невелике відхилення
+                        # Розраховуємо кореляцію між двома часовими рядами
+                        # Знаходимо спільний часовий проміжок
+                        common_data = pd.merge(
+                            data_window['close'].pct_change(),
+                            filtered_data['close'].pct_change(),
+                            left_index=True, right_index=True,
+                            suffixes=('_current', '_other'),
+                            how='inner'
+                        )
+
+                        if len(common_data) > 5:
+                            correlation = common_data.corr().iloc[0, 1]
+
+                            # Якщо кореляція висока, додаємо символ до списку корельованих
+                            if correlation >= 0.7:  # Високий поріг кореляції
+                                correlated_coins.append(other_symbol)
+
+            # Визначаємо тип кореляції
+            correlation_type = 'normal'
+            if pump_signal and len(correlated_coins) >= 2:
+                correlation_type = 'pump_group'
+            elif pump_signal:
+                correlation_type = 'single_pump'
+
+            correlation_signal = pump_signal and len(correlated_coins) >= 2
+
+            return {
+                'correlation_signal': correlation_signal,
+                'correlated_coins': correlated_coins,
+                'correlation_type': correlation_type,
+                'price_change_1h': price_change
+            }
+
+        except Exception as e:
+            print(f"Помилка аналізу історичної кореляції: {e}")
+            return {
+                'correlation_signal': False,
+                'correlated_coins': [],
+                'correlation_type': 'normal'
+            }

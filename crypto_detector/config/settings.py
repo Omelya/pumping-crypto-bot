@@ -55,7 +55,16 @@ DEFAULT_SIGNAL_WEIGHTS = {
     'Корельована активність з іншими монетами': 0.15,
     'Прискорення зростання об\'єму': 0.15,
     'Значна зміна ціни за 24 години': 0.40,
-    'Dump фаза після pump': 0.35
+    'Dump фаза після pump': 0.35,
+    'Вертикальний стрибок ціни': 0.40,
+    'V-подібний патерн ціни': 0.35,
+    'Велика зелена свічка з довгим тілом': 0.30,
+    # Нові сигнали
+    'Сильна кореляційна група': 0.25,
+    'Синхронізований pump у групі монет': 0.35,
+    'Виявлено стіну ордерів купівлі': 0.25,
+    'Виявлено стіну ордерів продажу': 0.25,
+    'Висока концентрація об\'єму': 0.20,
 }
 
 # Години підвищеного ризику (ніч та пізній вечір)
@@ -91,3 +100,44 @@ LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'  # Форм�
 # Налаштування моніторингу
 MONITORING_INTERVAL = 300       # Інтервал між перевірками в секундах (5 хвилин)
 ALERTS_DIR = 'alerts'           # Директорія для збереження сповіщень
+
+# Correlation analyzez db
+DB_NAME = 'crypto_data.db'
+
+# Криптовалюта для моніторингу
+TOKEN_FOR_MONITORING = [
+    'SOL/USDT',
+    'PEPE/USDT',
+    'BTC/USDT',
+    'ETH/USDT',
+    'BNB/USDT',
+    'AVAX/USDT',
+    'DOGE/USDT',
+    'CTT/USDT',
+    '1000APUUSDT',
+    'A8/USDT',
+    'ADA/USDT',
+    'ALGO/USDT',
+    'AUCTIONUSDT',
+    'CAKE/USDT',
+    'DOT/USDT',
+    'GALA/USDT',
+    'LAI/USDT',
+    '1000XUSDT',
+    'MAVIA/USDT',
+    'MKR/USDT',
+    'NOT/USDT',
+    'SHIB/USDT',
+    'SUI/USDT',
+    'TON/USDT',
+    'TRX/USDT',
+    'XLM/USDT',
+    'XRP/USDT',
+    'YFI/USDT',
+    'LINK/USDT',
+    'BAND/USDT',
+    'NMR/USDT',
+    'FET/USDT',
+    'CRO/USDT',
+    'KCS/USDT',
+]

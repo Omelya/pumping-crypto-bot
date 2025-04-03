@@ -48,24 +48,17 @@ class MLTrainer:
             return {}
 
         try:
-            # Очистка рядка від зайвих символів
             signals_str = signals_str.replace('\\"', '"')
-
-            # Заміна одинарних лапок на подвійні для правильного парсингу JSON
             signals_str = signals_str.replace("'", '"')
 
-            # Спроба розібрати сигнали як список словників
             try:
                 signals = json.loads(signals_str)
             except json.JSONDecodeError:
-                # Якщо не вдалося через JSON, спробуємо через ast
                 try:
                     signals = ast.literal_eval(signals_str)
                 except (SyntaxError, ValueError):
-                    # Якщо і так не вдалося, повертаємо порожній словник
                     return {}
 
-            # Витягуємо числові значення з опису сигналів
             features = {}
 
             for signal in signals:
@@ -73,11 +66,10 @@ class MLTrainer:
                 weight = signal.get('weight', 0)
                 description = signal.get('description', '')
 
-                # Зберігаємо вагу сигналу
                 features[f"{name.replace(' ', '_')}_weight"] = weight
 
-                # Витягуємо числа з опису
                 numbers = re.findall(r'-?\d+\.\d+|-?\d+', description)
+
                 if numbers:
                     features[f"{name.replace(' ', '_')}_value"] = float(numbers[0])
 
@@ -85,6 +77,7 @@ class MLTrainer:
 
         except Exception as e:
             print(f"Помилка при обробці сигналів: {str(e)}")
+
             return {}
 
     def prepare_features(self, training_data):
@@ -95,124 +88,86 @@ class MLTrainer:
         :return: X (фічі), y (мітки)
         """
         if isinstance(training_data, str) and os.path.exists(training_data):
-            # Якщо передано шлях до файлу
             print(f"Завантаження даних з файлу: {training_data}")
+
             data = pd.read_csv(training_data)
         elif isinstance(training_data, pd.DataFrame):
-            # Якщо передано DataFrame
             data = training_data.copy()
         else:
             raise ValueError("training_data повинен бути шляхом до файлу або DataFrame")
 
-        # Перевірка наявності необхідних колонок
         required_columns = ['is_event']
+
         if not all(col in data.columns for col in required_columns):
             raise ValueError(f"Дані повинні містити колонки: {required_columns}")
 
         print(f"Початкові дані: {data.shape}, колонки: {data.columns.tolist()}")
 
-        # Перетворюємо часову мітку в числові ознаки (година доби, день тижня)
         if 'timestamp' in data.columns:
             try:
                 data['timestamp'] = pd.to_datetime(data['timestamp'])
                 data['hour_of_day'] = data['timestamp'].dt.hour
                 data['day_of_week'] = data['timestamp'].dt.dayofweek
                 data = data.drop('timestamp', axis=1)
+
                 print("Успішно перетворено timestamp у числові ознаки")
             except Exception as e:
                 print(f"Помилка при обробці timestamp: {str(e)}")
                 if 'timestamp' in data.columns:
                     data = data.drop('timestamp', axis=1)
 
-        # Обробка сигналів, якщо вони є
         if 'signals' in data.columns:
             try:
-                # Витягуємо ознаки з сигналів
                 print("Обробка колонки 'signals'...")
                 signal_features_list = []
 
                 for idx, row in data.iterrows():
                     signal_features = self.extract_signal_features(row['signals'])
+
                     signal_features_list.append(signal_features)
 
-                # Створюємо DataFrame з цих ознак
                 signal_df = pd.DataFrame(signal_features_list)
 
-                # Об'єднуємо з основними даними, якщо є що об'єднувати
                 if not signal_df.empty:
                     print(f"Витягнуто {signal_df.shape[1]} ознак з сигналів")
+                    
                     data = pd.concat([data, signal_df], axis=1)
                 else:
                     print("Не вдалося витягнути ознаки з сигналів")
 
-                # Видаляємо оригінальну колонку
                 data = data.drop('signals', axis=1)
             except Exception as e:
                 print(f"Помилка при обробці сигналів: {str(e)}")
-                # Просто видаляємо колонку, якщо не вдалося обробити
+
                 data = data.drop('signals', axis=1)
 
-        # Те саме для adaptive_signals, якщо є
-        if 'adaptive_signals' in data.columns:
-            try:
-                print("Обробка колонки 'adaptive_signals'...")
-                adaptive_signal_features_list = []
-
-                for idx, row in data.iterrows():
-                    signal_features = self.extract_signal_features(row['adaptive_signals'])
-                    # Додаємо префікс, щоб відрізняти від звичайних сигналів
-                    signal_features = {f"adaptive_{k}": v for k, v in signal_features.items()}
-                    adaptive_signal_features_list.append(signal_features)
-
-                # Створюємо DataFrame з цих ознак
-                adaptive_signal_df = pd.DataFrame(adaptive_signal_features_list)
-
-                # Об'єднуємо з основними даними, якщо є що об'єднувати
-                if not adaptive_signal_df.empty:
-                    print(f"Витягнуто {adaptive_signal_df.shape[1]} ознак з adaptive_signals")
-                    data = pd.concat([data, adaptive_signal_df], axis=1)
-                else:
-                    print("Не вдалося витягнути ознаки з adaptive_signals")
-
-                # Видаляємо оригінальну колонку
-                data = data.drop('adaptive_signals', axis=1)
-            except Exception as e:
-                print(f"Помилка при обробці adaptive_signals: {str(e)}")
-                # Просто видаляємо колонку, якщо не вдалося обробити
-                data = data.drop('adaptive_signals', axis=1)
-
-        # Видаляємо символ, якщо він є
         if 'symbol' in data.columns:
             data = data.drop('symbol', axis=1)
 
-        # Переконуємось, що всі колонки, окрім is_event, є числового типу
         feature_columns = [col for col in data.columns if col != 'is_event']
 
         for col in feature_columns:
-            # Переконуємося, що колонка має числовий тип
             if data[col].dtype == 'object':
                 print(f"Конвертація нечислової колонки '{col}' у числовий формат")
-                # Спробуйте конвертувати у числовий тип
+
                 data[col] = pd.to_numeric(data[col], errors='coerce')
 
-        # Заповнюємо пропущені значення нулями
         print("Заповнення пропущених значень нулями")
         data = data.fillna(0)
 
-        # Переконуємося, що всі дані числові
         non_numeric_columns = []
+
         for col in data.columns:
             if col != 'is_event' and data[col].dtype == 'object':
                 non_numeric_columns.append(col)
 
         if non_numeric_columns:
             print(f"Увага! Колонки {non_numeric_columns} все ще мають нечисловий тип після обробки!")
-            # Видаляємо проблемні колонки
+
             data = data.drop(non_numeric_columns, axis=1)
-            # Оновлюємо список колонок для ознак
+
             feature_columns = [col for col in data.columns if col != 'is_event']
 
-        # Створюємо X та y
         X = data[feature_columns]
         y = data['is_event']
 
@@ -736,17 +691,25 @@ class MLTrainer:
         :param data: DataFrame з даними
         :return: DataFrame з стандартизованими ознаками
         """
-        # Стандартний набір ознак (16 ознак)
+        # Стандартний набір ознак (33 ознак)
         standard_features = [
             # Ознаки об'єму (4)
             'volume_percent_change', 'volume_z_score', 'volume_anomaly_count', 'volume_acceleration',
             # Ознаки ціни (6)
             'price_change_1h', 'price_change_24h', 'volatility_ratio', 'large_candles',
             'consecutive_up', 'price_acceleration',
+            # Додаткові ознаки pump-and-dump (4)
+            'distance_from_high', 'dump_phase', 'significant_pump', 'price_above_ema',
             # Ознаки книги ордерів (4)
-            'buy_sell_ratio', 'top_concentration', 'has_buy_wall', 'has_sell_wall',
+            'buy_sell_ratio', 'top_concentration', 'has_buy_wall', 'has_sell_wall', 'volume_concentration',
             # Ознаки соціальних даних (2)
-            'social_percent_change', 'social_growth_acceleration'
+            'social_percent_change', 'social_growth_acceleration',
+            # Ознаки часових патернів (3)
+            'time_risk_score', 'is_high_risk_hour', 'is_weekend',
+            # Ознака кореляції (1)
+            'correlation_signal', 'correlated_coins_count', 'correlation_type_pump_group', 'correlation_strength',
+            # Нові ознаки патернів (5)
+            'vertical_jump', 'jump_percent', 'v_pattern', 'large_green_candle', 'candle_body_percent'
         ]
 
         # Створюємо DataFrame з стандартними ознаками
@@ -827,22 +790,19 @@ class MLTrainer:
             else:
                 X_std['price_above_ema'] = 0
 
-            # Переконуємося, що всі ознаки числові
             for col in X_std.columns:
                 X_std[col] = pd.to_numeric(X_std[col], errors='coerce')
 
-            # Заповнюємо пропущені значення
             X_std = X_std.fillna(0)
 
-            # Перевіряємо кількість ознак
-            if X_std.shape[1] != 16:
-                print(f"WARNING: Feature count is {X_std.shape[1]}, expected 16. Adjusting...")
+            if X_std.shape[1] != 33:
+                print(f"WARNING: Feature count is {X_std.shape[1]}, expected 33. Adjusting...")
                 # Якщо ознак більше, видаляємо зайві
-                if X_std.shape[1] > 16:
-                    X_std = X_std.iloc[:, :16]
+                if X_std.shape[1] > 33:
+                    X_std = X_std.iloc[:, :33]
                 # Якщо ознак менше, додаємо нульові
                 else:
-                    for i in range(X_std.shape[1], 16):
+                    for i in range(X_std.shape[1], 33):
                         X_std[f'feature_{i}'] = 0
 
             if y is not None:
@@ -852,14 +812,14 @@ class MLTrainer:
         # Якщо це numpy array
         elif isinstance(X, np.ndarray):
             # Перевіряємо розмірність
-            if X.shape[1] != 16:
-                print(f"WARNING: Feature count is {X.shape[1]}, expected 16. Adjusting...")
+            if X.shape[1] != 33:
+                print(f"WARNING: Feature count is {X.shape[1]}, expected 33. Adjusting...")
                 # Якщо ознак більше, видаляємо зайві
-                if X.shape[1] > 16:
-                    X = X[:, :16]
+                if X.shape[1] > 33:
+                    X = X[:, :33]
                 # Якщо ознак менше, додаємо нульові
                 else:
-                    X = np.pad(X, ((0, 0), (0, 16 - X.shape[1])), 'constant')
+                    X = np.pad(X, ((0, 0), (0, 33 - X.shape[1])), 'constant')
 
             if y is not None:
                 return X, y

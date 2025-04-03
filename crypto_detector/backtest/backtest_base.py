@@ -239,6 +239,7 @@ class CryptoBacktester:
 
         # Завантаження історичних даних
         historical_data = self.load_historical_data(data_file)
+
         if historical_data is None:
             return None
 
@@ -258,14 +259,15 @@ class CryptoBacktester:
         for event_time in events_df.index:
             test_timestamps.append(event_time)
 
-        # Додавання випадкових точок, які не є подіями (з кращим балансом)
         non_event_times = historical_data.index.difference(events_df.index)
+
         if len(non_event_times) > len(events_df):
-            # Для кращого балансу класів
-            balance_ratio = 1.5  # Зменшено для більш збалансованого набору даних
+            balance_ratio = 1.5
+
             random_non_events = np.random.choice(non_event_times,
                                                  size=min(int(len(events_df) * balance_ratio), len(non_event_times)),
                                                  replace=False)
+
             test_timestamps.extend(random_non_events)
 
         # Бектестинг на кожній тестовій точці
@@ -369,6 +371,18 @@ class CryptoBacktester:
         # Аналіз цінової динаміки
         price_analysis = await detector.price_analyzer.analyze_historical_price(data_window)
 
+        # Виявлення нових патернів
+        vertical_jump, jump_percent = detector.price_analyzer.detect_vertical_price_jump(data_window)
+        v_pattern_detected = detector.price_analyzer.detect_v_pattern(data_window)
+        large_green_candle, candle_body_percent = detector.price_analyzer.detect_large_candles(data_window)
+
+        # Додаємо результати до price_analysis
+        price_analysis['vertical_price_jump'] = vertical_jump
+        price_analysis['jump_percent'] = jump_percent
+        price_analysis['v_pattern_detected'] = v_pattern_detected
+        price_analysis['large_green_candle'] = large_green_candle
+        price_analysis['candle_body_percent'] = candle_body_percent
+
         # Додаткові розрахунки для прискорення об'єму
         if not data_window.empty and len(data_window) >= 6:
             data_window['volume_change'] = data_window['volume'].pct_change()
@@ -377,19 +391,19 @@ class CryptoBacktester:
         else:
             volume_analysis['volume_acceleration'] = 0
 
-        # Імітація аналізу книги ордерів
-        order_book_analysis = {
-            'order_book_signal': False,
-            'buy_sell_ratio': 1.0
-        }
+        order_book_analysis = await detector.orderbook_analyzer._analyze_historical_orderbook(timestamp, data_window)
 
-        # Імітація соціальних даних
         social_data = {
             'social_signal': False,
             'mentions': 0,
             'average_mentions': 0,
             'percent_change': 0
         }
+
+        # Аналіз кореляції на історичних даних
+        correlation_data = await self._analyze_historical_correlation(
+            detector, symbol, timestamp, data_window
+        )
 
         # Імітація часових патернів
         time_of_day = pd.Timestamp(timestamp).hour
@@ -426,16 +440,25 @@ class CryptoBacktester:
             })
             confidence += 0.25 * min(abs(price_analysis['recent_price_change']) / 8, 1.0)
 
-        # Сигнал 3: Прискорення об'єму
-        if volume_analysis.get('volume_acceleration', 0) > 0.05:
+        # Сигнал 3: Дисбаланс книги ордерів
+        if order_book_analysis['order_book_signal']:
             signals.append({
-                'name': 'Прискорення зростання об\'єму',
-                'description': f"Швидкість зростання об\'єму збільшується: {volume_analysis['volume_acceleration']:.2f}",
-                'weight': 0.25
+                'name': 'Дисбаланс книги ордерів',
+                'description': f"Співвідношення ордерів купівлі/продажу: {order_book_analysis['buy_sell_ratio']:.2f}",
+                'weight': 0.2
             })
-            confidence += 0.25 * min(volume_analysis['volume_acceleration'] / 0.15, 1.0)
 
-        # Сигнал 4: Часовий патерн
+            ratio = order_book_analysis['buy_sell_ratio']
+
+            if ratio == 0:
+                confidence += 0.2
+            elif ratio > 1:
+                confidence += 0.2 * min(ratio / 1.7, 1.0)
+            else:
+                # ratio < 1 і не дорівнює 0
+                confidence += 0.2 * min(1 / ratio / 1.7, 1.0)
+
+        # Сигнал 5: Часовий патерн
         if time_pattern_data['time_pattern_signal']:
             signals.append({
                 'name': 'Підозрілий часовий патерн',
@@ -443,6 +466,100 @@ class CryptoBacktester:
                 'weight': 0.15
             })
             confidence += 0.15 * time_pattern_data['time_risk_score']
+
+        # Сигнал 6: Кореляція з іншими ринками
+        if correlation_data['correlation_signal']:
+            correlated_coins = ', '.join(correlation_data['correlated_coins']) if correlation_data[
+                'correlated_coins'] else "немає даних"
+            signals.append({
+                'name': 'Корельована активність з іншими монетами',
+                'description': f"Виявлено схожу активність на інших монетах: {correlated_coins}",
+                'weight': 0.15
+            })
+            confidence += 0.15
+
+        # Сигнал 7: Прискорення об'єму
+        if volume_analysis.get('volume_acceleration', 0) > 0.1:
+            signals.append({
+                'name': 'Прискорення зростання об\'єму',
+                'description': f"Швидкість зростання об\'єму збільшується: {volume_analysis['volume_acceleration']:.2f}",
+                'weight': 0.15
+            })
+            confidence += 0.15 * min(volume_analysis['volume_acceleration'] / 0.2, 1.0)
+
+        # Сигнал 8: Значна зміна ціни за 24 години
+        if price_analysis.get('price_change_24h', 0) > 50:
+            signals.append({
+                'name': 'Значна зміна ціни за 24 години',
+                'description': f"Ціна зросла на {price_analysis['price_change_24h']:.2f}% за останні 24 години",
+                'weight': 0.40
+            })
+            confidence += 0.40 * min(price_analysis['price_change_24h'] / 100, 1.0)
+
+        # Сигнал 9: Виявлено dump фазу після pump
+        if price_analysis.get('dump_phase', False):
+            signals.append({
+                'name': 'Dump фаза після pump',
+                'description': f"Ціна знизилась на {abs(price_analysis['distance_from_high']):.2f}% від нещодавнього піку",
+                'weight': 0.35
+            })
+            confidence += 0.35 * min(abs(price_analysis['distance_from_high']) / 30, 1.0)
+
+        # Новий сигнал 10: Вертикальний стрибок ціни
+        if price_analysis.get('vertical_price_jump', False):
+            signals.append({
+                'name': 'Вертикальний стрибок ціни',
+                'description': f"Виявлено вертикальне зростання ціни на {price_analysis.get('jump_percent', 0):.2f}% за короткий період",
+                'weight': 0.40
+            })
+            confidence += 0.40 * min(price_analysis.get('jump_percent', 0) / 50, 1.0)
+
+        # Новий сигнал 11: Паттерн V-подібного руху ціни
+        if price_analysis.get('v_pattern_detected', False):
+            signals.append({
+                'name': 'V-подібний патерн ціни',
+                'description': f"Виявлено швидке зростання і падіння ціни без консолідації",
+                'weight': 0.35
+            })
+            confidence += 0.35
+
+        # Новий сигнал 12: Велика зелена свічка з довгим тілом
+        if price_analysis.get('large_green_candle', False):
+            signals.append({
+                'name': 'Велика зелена свічка з довгим тілом',
+                'description': f"Тіло свічки складає {price_analysis.get('candle_body_percent', 0):.2f}% від ціни",
+                'weight': 0.30
+            })
+            confidence += 0.30 * min(price_analysis.get('candle_body_percent', 0) / 15, 1.0)
+
+        # Сигнал 13: Сильна кореляційна група
+        if correlation_data.get('correlated_coins') and len(correlation_data['correlated_coins']) >= 3:
+            signals.append({
+                'name': 'Сильна кореляційна група',
+                'description': f"Монета входить до групи з {len(correlation_data['correlated_coins']) + 1} корельованих активів",
+                'weight': 0.25
+            })
+            confidence += 0.25 * min(len(correlation_data['correlated_coins']) / 5, 1.0)
+
+        # Сигнал 14: Синхронізований pump у кореляційній групі
+        if (correlation_data.get('correlation_type') == 'pump_group' and
+                correlation_data.get('price_change_1h', 0) > 5.0):
+            signals.append({
+                'name': 'Синхронізований pump у групі монет',
+                'description': f"Виявлено синхронний pump з іншими монетами, зміна ціни: {correlation_data.get('price_change_1h', 0):.2f}%",
+                'weight': 0.35
+            })
+            confidence += 0.35 * min(correlation_data.get('price_change_1h', 0) / 15, 1.0)
+
+        # Сигнал 15: Наявність стіни ордерів
+        if order_book_analysis.get('has_buy_wall', False) or order_book_analysis.get('has_sell_wall', False):
+            wall_type = "купівлі" if order_book_analysis.get('has_buy_wall', False) else "продажу"
+            signals.append({
+                'name': f'Виявлено стіну ордерів {wall_type}',
+                'description': f"Значна концентрація ліквідності виявлена у книзі ордерів",
+                'weight': 0.25
+            })
+            confidence += 0.25
 
         # Формування результату
         result = {
@@ -455,11 +572,146 @@ class CryptoBacktester:
                 'price': price_analysis,
                 'time_pattern': time_pattern_data,
                 'order_book': order_book_analysis,
-                'social': social_data
+                'social': social_data,
+                'correlation': correlation_data
             }
         }
 
         return result
+
+    async def _analyze_historical_correlation(self, detector, symbol, timestamp, data_window):
+        """
+        Аналіз кореляції на історичних даних
+
+        :param detector: Екземпляр CryptoActivityDetector
+        :param symbol: Символ криптовалюти
+        :param timestamp: Часова мітка аналізу
+        :param data_window: Поточне вікно даних
+        :return: Результат аналізу кореляції
+        """
+        # Перевіряємо наявність необхідних атрибутів
+        if not hasattr(detector, 'correlation_analyzer') or not hasattr(detector, 'historical_data'):
+            return {
+                'correlation_signal': False,
+                'correlated_coins': [],
+                'correlation_type': 'normal'
+            }
+
+        try:
+            # Отримання часової мітки як об'єкту datetime
+            if isinstance(timestamp, str):
+                timestamp = pd.Timestamp(timestamp).to_pydatetime()
+            elif isinstance(timestamp, pd.Timestamp):
+                timestamp = timestamp.to_pydatetime()
+
+            # Визначаємо часові межі для аналізу (3 години до і 1 година після)
+            start_time = timestamp - pd.Timedelta(hours=3)
+            end_time = timestamp + pd.Timedelta(hours=1)
+
+            # Отримуємо список символів, для яких є історичні дані
+            available_symbols = list(detector.historical_data.keys())
+
+            if not available_symbols or symbol not in available_symbols:
+                return {
+                    'correlation_signal': False,
+                    'correlated_coins': [],
+                    'correlation_type': 'normal'
+                }
+
+            # Отримуємо зміну ціни для поточного символу за останню годину
+            if not data_window.empty and len(data_window) > 5:
+                last_hour_data = data_window.iloc[-12:]  # Останні 12 5-хвилинних інтервалів = 1 година
+                if len(last_hour_data) >= 2:
+                    price_change = (last_hour_data['close'].iloc[-1] / last_hour_data['close'].iloc[0] - 1) * 100
+                else:
+                    price_change = 0
+            else:
+                price_change = 0
+
+            # Виявляємо різке зростання ціни (pump)
+            pump_threshold = 5.0  # Поріг для визначення pump (5% за годину)
+            pump_signal = price_change >= pump_threshold
+
+            if not pump_signal:
+                return {
+                    'correlation_signal': False,
+                    'correlated_coins': [],
+                    'correlation_type': 'normal',
+                    'price_change_1h': price_change
+                }
+
+            # Аналіз кореляції з іншими символами
+            correlated_coins = []
+
+            for other_symbol in available_symbols:
+                if other_symbol == symbol:
+                    continue
+
+                # Отримуємо дані для іншого символу
+                if other_symbol in detector.historical_data:
+                    other_data = detector.historical_data[other_symbol]
+
+                    # Фільтруємо дані за часовим проміжком
+                    if isinstance(other_data.index, pd.DatetimeIndex):
+                        filtered_data = other_data[(other_data.index >= start_time) & (other_data.index <= end_time)]
+                    else:
+                        # Якщо індекс не datetime, пропускаємо цей символ
+                        continue
+
+                    if filtered_data.empty or len(filtered_data) < 5:
+                        continue
+
+                    # Обчислюємо зміну ціни для іншого символу
+                    other_last_hour = filtered_data.iloc[-12:]  # Останні 12 5-хвилинних інтервалів
+                    if len(other_last_hour) < 2:
+                        continue
+
+                    other_price_change = (other_last_hour['close'].iloc[-1] / other_last_hour['close'].iloc[
+                        0] - 1) * 100
+
+                    # Визначаємо кореляцію на основі синхронних цінових рухів
+                    if other_price_change >= pump_threshold * 0.7:  # Допускаємо невелике відхилення
+                        # Розраховуємо кореляцію між двома часовими рядами
+                        # Знаходимо спільний часовий проміжок
+                        common_data = pd.merge(
+                            data_window['close'].pct_change(),
+                            filtered_data['close'].pct_change(),
+                            left_index=True, right_index=True,
+                            suffixes=('_current', '_other'),
+                            how='inner'
+                        )
+
+                        if len(common_data) > 5:
+                            correlation = common_data.corr().iloc[0, 1]
+
+                            # Якщо кореляція висока, додаємо символ до списку корельованих
+                            if correlation >= 0.7:  # Високий поріг кореляції
+                                correlated_coins.append(other_symbol)
+
+            # Визначаємо тип кореляції
+            correlation_type = 'normal'
+            if pump_signal and len(correlated_coins) >= 2:
+                correlation_type = 'pump_group'
+            elif pump_signal:
+                correlation_type = 'single_pump'
+
+            correlation_signal = pump_signal and len(correlated_coins) >= 2
+
+            return {
+                'correlation_signal': correlation_signal,
+                'correlated_coins': correlated_coins,
+                'correlation_type': correlation_type,
+                'price_change_1h': price_change
+            }
+
+        except Exception as e:
+            # У випадку помилки повертаємо базовий результат
+            print(f"Помилка аналізу історичної кореляції: {e}")
+            return {
+                'correlation_signal': False,
+                'correlated_coins': [],
+                'correlation_type': 'normal'
+            }
 
     def save_backtest_results(self, filename="backtest_results.json"):
         """

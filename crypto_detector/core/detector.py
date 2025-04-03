@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import datetime
 
 from crypto_detector.data.exchange_client import ExchangeClient
@@ -8,6 +9,17 @@ from crypto_detector.analysis.orderbook_analyzer import OrderBookAnalyzer
 from crypto_detector.analysis.time_pattern_analyzer import TimePatternAnalyzer
 from crypto_detector.analysis.correlation_analyzer import CorrelationAnalyzer
 from crypto_detector.managers.social_media_manager import SocialMediaManager
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("detector.log"),
+        logging.StreamHandler()
+    ]
+)
+
+logger = logging.getLogger(__name__)
 
 
 class CryptoActivityDetector:
@@ -78,7 +90,29 @@ class CryptoActivityDetector:
         :return: Dict з оцінкою ймовірності підвищення активності
         """
         if all_symbols is None:
-            all_symbols = [symbol]
+            all_symbols = []
+
+            # Отримуємо список символів з бази даних, якщо він не переданий
+            if hasattr(self.correlation_analyzer, 'get_database_stats'):
+                try:
+                    # Підключаємось до бази даних
+                    import sqlite3
+
+                    conn = sqlite3.connect(self.correlation_analyzer.db_path)
+                    cursor = conn.cursor()
+
+                    # Отримуємо унікальні символи
+                    cursor.execute("SELECT DISTINCT symbol FROM market_data")
+                    all_symbols = [row[0] for row in cursor.fetchall()]
+
+                    conn.close()
+                except Exception as e:
+                    logger.error(f"Помилка при отриманні списку символів з бази даних: {e}")
+                    all_symbols = [symbol]
+
+            # Якщо не вдалося отримати список символів з бази даних
+            if not all_symbols:
+                all_symbols = [symbol]
 
         # Отримання та аналіз даних
         tasks = [
@@ -168,7 +202,7 @@ class CryptoActivityDetector:
             })
             confidence += 0.15 * min(volume_analysis['volume_acceleration'] / 0.2, 1.0)
 
-        # НОВИЙ Сигнал 8: Значна зміна ціни за 24 години
+        # Сигнал 8: Значна зміна ціни за 24 години
         if price_analysis.get('price_change_24h', 0) > 50:
             signals.append({
                 'name': 'Значна зміна ціни за 24 години',
@@ -177,7 +211,7 @@ class CryptoActivityDetector:
             })
             confidence += 0.40 * min(price_analysis['price_change_24h'] / 100, 1.0)
 
-        # НОВИЙ Сигнал 9: Виявлено dump фазу після pump
+        # Сигнал 9: Виявлено dump фазу після pump
         if price_analysis.get('dump_phase', False):
             signals.append({
                 'name': 'Dump фаза після pump',
@@ -185,6 +219,33 @@ class CryptoActivityDetector:
                 'weight': 0.35
             })
             confidence += 0.35 * min(abs(price_analysis['distance_from_high']) / 30, 1.0)
+
+        # Новий сигнал 1: Виявлення вертикального стрибка ціни
+        if price_analysis.get('vertical_price_jump', False):
+            signals.append({
+                'name': 'Вертикальний стрибок ціни',
+                'description': f"Виявлено вертикальне зростання ціни на {price_analysis.get('jump_percent', 0):.2f}% за короткий період",
+                'weight': 0.40
+            })
+            confidence += 0.40 * min(price_analysis.get('jump_percent', 0) / 50, 1.0)
+
+        # Новий сигнал 2: Паттерн V-подібного руху ціни
+        if price_analysis.get('v_pattern_detected', False):
+            signals.append({
+                'name': 'V-подібний патерн ціни',
+                'description': f"Виявлено швидке зростання і падіння ціни без консолідації",
+                'weight': 0.35
+            })
+            confidence += 0.35
+
+        # Новий сигнал 3: Велика зелена свічка з довгим тілом
+        if price_analysis.get('large_green_candle', False):
+            signals.append({
+                'name': 'Велика зелена свічка з довгим тілом',
+                'description': f"Тіло свічки складає {price_analysis.get('candle_body_percent', 0):.2f}% від ціни",
+                'weight': 0.30
+            })
+            confidence += 0.30 * min(price_analysis.get('candle_body_percent', 0) / 15, 1.0)
 
         # Формування результату
         result = {
