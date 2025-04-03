@@ -22,7 +22,12 @@ class EventGenerator:
 
     def generate_events(self, historical_data, window_hours=24):
         """
-        Генерація тестових подій на основі історичних даних
+        Генерація тестових подій на основі історичних даних з покращеними критеріями виявлення
+        pump-and-dump патернів, узгодженими з сигналами детектора.
+
+        :param historical_data: DataFrame з історичними OHLCV даними
+        :param window_hours: Розмір вікна для аналізу в годинах
+        :return: DataFrame з подіями
         """
         # Перевірка наявності необхідних колонок
         required_columns = ['open', 'high', 'low', 'close', 'volume']
@@ -38,25 +43,64 @@ class EventGenerator:
         window_size = int(window_hours * 60 / timeframe_minutes)
 
         # Розрахунок додаткових індикаторів
+        # Основні індикатори
         data['price_change'] = data['close'].pct_change(window_size) * 100
         data['volatility'] = data['close'].pct_change().rolling(window=int(window_size / 2)).std() * 100
         data['volume_change'] = data['volume'].pct_change(int(window_size / 2)) * 100
-
-        # Додамо розрахунок відносного обсягу торгів
         data['relative_volume'] = data['volume'] / data['volume'].rolling(window=20).mean()
+
+        # Додаткові індикатори для узгодження з сигналами детектора
+
+        # 1. EMA для визначення price_above_ema
+        data['ema20'] = data['close'].ewm(span=20).mean()
+        data['price_above_ema'] = (data['close'] > data['ema20']).astype(int)
+
+        # 2. Розрахунок розміру тіла свічок для виявлення large_green_candle
+        data['body_size'] = (data['close'] - data['open']).abs() / data['open'] * 100
+        data['is_green'] = (data['close'] > data['open']).astype(int)
+        data['green_body_size'] = data['body_size'] * data['is_green']
+
+        # 3. Розрахунок відстані від локального максимуму (для dump_phase)
+        data['rolling_max'] = data['high'].rolling(window=window_size).max()
+        data['distance_from_high'] = (data['close'] / data['rolling_max'] - 1) * 100
+
+        # 4. Визначення вертикальних стрибків ціни
+        data['price_change_5'] = data['close'].pct_change(5) * 100
+        data['volume_change_5'] = data['volume'].pct_change(5) * 100
+
+        # 5. Визначення V-подібного патерну
+        data['last_high'] = data['high'].rolling(window=int(window_size / 4)).max()
+        data['high_to_current'] = (data['close'] / data['last_high'] - 1) * 100
 
         # Знаходження точок з суттєвою зміною ціни ТА об'єму
         events = []
 
         for i in range(window_size, len(data) - window_size):
-            # Покращений критерій для PUMP фази:
-            # 1. Значна зміна ціни
-            # 2. Підвищений об'єм торгів (відносно середнього)
-            # 3. Відносно швидке зростання
-            if (data['price_change'].iloc[i] > self.min_price_change and
-                    data['relative_volume'].iloc[i] > 1.5 and  # Відносний об'єм > 150% від середнього
-                    data['volume_change'].iloc[i] > self.min_volume_change):
+            # Комплексний критерій для PUMP фази, узгоджений з сигналами детектора:
 
+            # 1. Цінова активність
+            price_signal = (
+                    data['price_change'].iloc[i] > self.min_price_change or
+                    data['price_change_5'].iloc[i] > self.min_price_change * 0.8
+            )
+
+            # 2. Об'ємна активність
+            volume_signal = (
+                    data['relative_volume'].iloc[i] > 1.5 and
+                    data['volume_change'].iloc[i] > self.min_volume_change
+            )
+
+            # 3. Ознаки патернів для узгодження з детектором сигналів
+            pattern_signals = (
+                # Велика зелена свічка
+                    (data['is_green'].iloc[i] == 1 and data['body_size'].iloc[i] > 3.0) or
+                    # Ціна вище EMA
+                    data['price_above_ema'].iloc[i] == 1 or
+                    # Вертикальний стрибок ціни
+                    (data['price_change_5'].iloc[i] > 15.0 and data['volume_change_5'].iloc[i] > 30.0)
+            )
+
+            if price_signal and (volume_signal or pattern_signals):
                 # Перевірка наступних свічок на DUMP
                 forward_window = data.iloc[i:i + window_size]
                 if len(forward_window) >= window_size / 2:
@@ -65,11 +109,19 @@ class EventGenerator:
                     end_price = forward_window['close'].iloc[-1]
                     dump_percent = (end_price / max_price - 1) * 100
 
-                    # Додаткові критерії для підтвердження реальної події, а не просто волатильності
+                    # Додаткові критерії для узгодження з детектором
                     price_acceleration = data['price_change'].diff().iloc[i]
                     consecutive_growth = sum(1 for x in data['price_change'].iloc[i - 3:i + 1] if x > 0)
 
-                    # Чіткіша класифікація подій
+                    # Розрахунок характеристик V-патерну
+                    v_pattern = False
+                    if dump_percent < -self.min_dump_percent and data['price_change'].iloc[i] > self.min_price_change:
+                        # Швидке зростання і падіння без консолідації = V-патерн
+                        peak_to_end_time = (forward_window.index[-1] - max_price_idx).total_seconds() / 3600
+                        if peak_to_end_time < window_hours / 2:  # Падіння відбулося швидко після піку
+                            v_pattern = True
+
+                    # Чіткіша класифікація подій, узгоджена з сигналами детектора
                     event_type = 'unknown'
 
                     # Pump-and-dump: швидке зростання з наступним падінням
@@ -84,7 +136,7 @@ class EventGenerator:
                         continue  # Пропускаємо події, які не відповідають чітким критеріям
 
                     # Визначення початку події (момент, коли варто виявити підозрілу активність)
-                    # Знаходимо момент початку зростання, а не просто відступаємо на window_size
+                    # Знаходимо момент початку зростання
                     start_idx = i
                     for j in range(i - 1, max(0, i - window_size), -1):
                         if data['price_change'].iloc[j] <= 0:
@@ -94,7 +146,7 @@ class EventGenerator:
                     event_start_idx = max(0, start_idx - int(window_size / 4))  # Додаємо невелике вікно перед початком
                     event_start_time = data.index[event_start_idx]
 
-                    # Формування даних події
+                    # Формування даних події з більшою кількістю характеристик
                     event_data = {
                         'timestamp': event_start_time,
                         'start_price': data['close'].iloc[event_start_idx],
@@ -108,7 +160,13 @@ class EventGenerator:
                         'price_acceleration': price_acceleration,
                         'consecutive_growth': consecutive_growth,
                         'event_type': event_type,
-                        'is_event': 1
+                        'is_event': 1,
+                        # Додаткові характеристики для узгодження з сигналами
+                        'price_above_ema': data['price_above_ema'].iloc[i],
+                        'body_size': data['body_size'].iloc[i],
+                        'distance_from_high': data['distance_from_high'].iloc[i],
+                        'v_pattern': v_pattern,
+                        'vertical_jump': data['price_change_5'].iloc[i] > 15.0
                     }
                     events.append(event_data)
 
@@ -142,6 +200,10 @@ class EventGenerator:
             if unique_events:
                 filtered_times, filtered_events = zip(*unique_events)
                 filtered_df = pd.DataFrame(filtered_events, index=filtered_times)
+
+                print(f"Знайдено {len(filtered_df)} подій:")
+                print(f"- Pump-and-dump: {len(filtered_df[filtered_df['event_type'] == 'pump_and_dump'])}")
+                print(f"- Pump only: {len(filtered_df[filtered_df['event_type'] == 'pump_only'])}")
 
                 return filtered_df
             else:

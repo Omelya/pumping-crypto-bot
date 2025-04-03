@@ -82,14 +82,17 @@ class MLTrainer:
 
     def prepare_features(self, training_data):
         """
-        Підготовка фічей та міток для навчання
+        Підготовка фічей та міток для навчання з гарантованим виходом 33 ознак
+        для сумісності з моделлю передбачення
 
         :param training_data: Дані для навчання
         :return: X (фічі), y (мітки)
         """
+        # Очікувана кількість ознак для сумісності
+        expected_features = 33
+
         if isinstance(training_data, str) and os.path.exists(training_data):
             print(f"Завантаження даних з файлу: {training_data}")
-
             data = pd.read_csv(training_data)
         elif isinstance(training_data, pd.DataFrame):
             data = training_data.copy()
@@ -97,25 +100,46 @@ class MLTrainer:
             raise ValueError("training_data повинен бути шляхом до файлу або DataFrame")
 
         required_columns = ['is_event']
-
         if not all(col in data.columns for col in required_columns):
             raise ValueError(f"Дані повинні містити колонки: {required_columns}")
 
         print(f"Початкові дані: {data.shape}, колонки: {data.columns.tolist()}")
 
+        # Визначення стандартних назв ознак, які ми очікуємо
+        standard_feature_names = [
+            # Ознаки об'єму (4)
+            'volume_percent_change', 'volume_z_score', 'volume_anomaly_count', 'volume_acceleration',
+            # Ознаки ціни (6)
+            'price_change_1h', 'price_change_24h', 'volatility_ratio', 'large_candles',
+            'consecutive_up', 'price_acceleration',
+            # Додаткові ознаки pump-and-dump (4)
+            'distance_from_high', 'dump_phase', 'significant_pump', 'price_above_ema',
+            # Ознаки книги ордерів (5)
+            'buy_sell_ratio', 'top_concentration', 'has_buy_wall', 'has_sell_wall', 'volume_concentration',
+            # Ознаки соціальних даних (2)
+            'social_percent_change', 'social_growth_acceleration',
+            # Ознаки часових патернів (3)
+            'time_risk_score', 'is_high_risk_hour', 'is_weekend',
+            # Ознаки кореляції (4)
+            'correlation_signal', 'correlated_coins_count', 'correlation_type_pump_group', 'correlation_strength',
+            # Нові ознаки патернів (5)
+            'vertical_jump', 'jump_percent', 'v_pattern', 'large_green_candle', 'candle_body_percent'
+        ]
+
+        # Перевірка й обробка часових атрибутів
         if 'timestamp' in data.columns:
             try:
                 data['timestamp'] = pd.to_datetime(data['timestamp'])
                 data['hour_of_day'] = data['timestamp'].dt.hour
                 data['day_of_week'] = data['timestamp'].dt.dayofweek
                 data = data.drop('timestamp', axis=1)
-
                 print("Успішно перетворено timestamp у числові ознаки")
             except Exception as e:
                 print(f"Помилка при обробці timestamp: {str(e)}")
                 if 'timestamp' in data.columns:
                     data = data.drop('timestamp', axis=1)
 
+        # Обробка сигналів
         if 'signals' in data.columns:
             try:
                 print("Обробка колонки 'signals'...")
@@ -123,14 +147,12 @@ class MLTrainer:
 
                 for idx, row in data.iterrows():
                     signal_features = self.extract_signal_features(row['signals'])
-
                     signal_features_list.append(signal_features)
 
                 signal_df = pd.DataFrame(signal_features_list)
 
                 if not signal_df.empty:
                     print(f"Витягнуто {signal_df.shape[1]} ознак з сигналів")
-                    
                     data = pd.concat([data, signal_df], axis=1)
                 else:
                     print("Не вдалося витягнути ознаки з сигналів")
@@ -138,42 +160,86 @@ class MLTrainer:
                 data = data.drop('signals', axis=1)
             except Exception as e:
                 print(f"Помилка при обробці сигналів: {str(e)}")
-
                 data = data.drop('signals', axis=1)
 
+        # Видалення колонки символу, якщо вона є
         if 'symbol' in data.columns:
             data = data.drop('symbol', axis=1)
 
+        # Фільтрація колонок-ознак (все крім is_event)
         feature_columns = [col for col in data.columns if col != 'is_event']
 
+        # Конвертація нечислових ознак
         for col in feature_columns:
             if data[col].dtype == 'object':
                 print(f"Конвертація нечислової колонки '{col}' у числовий формат")
-
                 data[col] = pd.to_numeric(data[col], errors='coerce')
 
+        # Заповнення пропусків нулями
         print("Заповнення пропущених значень нулями")
         data = data.fillna(0)
 
+        # Перевірка на наявність нечислових колонок після обробки
         non_numeric_columns = []
-
         for col in data.columns:
             if col != 'is_event' and data[col].dtype == 'object':
                 non_numeric_columns.append(col)
 
         if non_numeric_columns:
             print(f"Увага! Колонки {non_numeric_columns} все ще мають нечисловий тип після обробки!")
-
             data = data.drop(non_numeric_columns, axis=1)
-
             feature_columns = [col for col in data.columns if col != 'is_event']
 
+        # Отримання X та y
         X = data[feature_columns]
         y = data['is_event']
 
-        print(f"Підготовлено {len(X)} зразків з {len(feature_columns)} ознаками")
+        print(f"Початкові ознаки: {X.shape[1]} (підготовлено {len(X)} зразків)")
 
-        return X, y
+        # --- КРИТИЧНА ЧАСТИНА: Забезпечення стандартного набору ознак ---
+
+        # Створюємо новий DataFrame з потрібною кількістю ознак (33)
+        X_standardized = pd.DataFrame(index=X.index)
+
+        # Додаємо всі доступні стандартні ознаки
+        for feature_name in standard_feature_names:
+            if feature_name in X.columns:
+                X_standardized[feature_name] = X[feature_name]
+            else:
+                # Якщо ознаки немає, додаємо нульовий стовпець
+                X_standardized[feature_name] = 0
+                print(f"Додано відсутню ознаку: {feature_name}")
+
+        # Перевірка кількості ознак після стандартизації
+        if X_standardized.shape[1] != expected_features:
+            print(
+                f"ПОПЕРЕДЖЕННЯ: Кількість ознак після стандартизації ({X_standardized.shape[1]}) відрізняється від очікуваної ({expected_features})")
+
+            # Якщо ознак більше ніж потрібно, видаляємо зайві
+            if X_standardized.shape[1] > expected_features:
+                extra_columns = X_standardized.columns[expected_features:]
+                print(f"Видалення зайвих ознак: {list(extra_columns)}")
+                X_standardized = X_standardized.iloc[:, :expected_features]
+
+            # Якщо ознак менше ніж потрібно, додаємо відсутні як нулі
+            elif X_standardized.shape[1] < expected_features:
+                missing_count = expected_features - X_standardized.shape[1]
+                print(f"Додавання {missing_count} синтетичних ознак")
+                for i in range(X_standardized.shape[1], expected_features):
+                    X_standardized[f'synth_feature_{i}'] = 0
+
+        print(f"Фінальний розмір ознак: {X_standardized.shape[1]}")
+
+        # Перевірка, чи всі дані числові
+        for col in X_standardized.columns:
+            if not pd.api.types.is_numeric_dtype(X_standardized[col]):
+                print(f"Попередження: колонка {col} не є числовою. Конвертуємо...")
+                X_standardized[col] = pd.to_numeric(X_standardized[col], errors='coerce').fillna(0)
+
+        if isinstance(X_standardized, pd.DataFrame):
+            X_standardized = X_standardized[standard_feature_names]
+
+        return X_standardized, y
 
     def train_model(self, X, y, model_type='gradient_boosting', category=None, **kwargs):
         """

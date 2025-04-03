@@ -263,110 +263,93 @@ class AdaptiveCryptoDetector:
 
     def _extract_features_from_result(self, result):
         """
-        Витягування ознак з результату для ML моделі з урахуванням нових метрик pump-and-dump
+        Витягування ознак з результату для ML моделі з гарантованим порядком ознак
 
         :param result: Результат аналізу
-        :return: Список ознак
+        :return: Список ознак у фіксованому порядку
         """
+        # Створюємо словник для зберігання ознак
+        feature_dict = {}
+
+        try:
+            # 1. Ознаки об'єму
+            volume_data = result['raw_data']['volume']
+            feature_dict['volume_percent_change'] = volume_data.get('percent_change', 0) / 100
+            feature_dict['volume_z_score'] = volume_data.get('z_score', 0)
+            feature_dict['volume_anomaly_count'] = volume_data.get('anomaly_count', 0) / 5
+            feature_dict['volume_acceleration'] = volume_data.get('volume_acceleration', 0)
+
+            # 2. Ознаки ціни
+            price_data = result['raw_data']['price']
+            feature_dict['price_change_1h'] = price_data.get('price_change_1h', 0) / 100
+            feature_dict['price_change_24h'] = price_data.get('price_change_24h', 0) / 100
+            feature_dict['volatility_ratio'] = price_data.get('volatility_ratio', 0)
+            feature_dict['large_candles'] = price_data.get('large_candles', 0) / 5
+            feature_dict['consecutive_up'] = price_data.get('consecutive_up', 0) / 5
+            feature_dict['price_acceleration'] = price_data.get('price_acceleration', 0)
+
+            # 3. Додаткові ознаки pump-and-dump
+            feature_dict['distance_from_high'] = price_data.get('distance_from_high', 0) / 100
+            feature_dict['dump_phase'] = 1 if price_data.get('dump_phase', False) else 0
+            feature_dict['significant_pump'] = 1 if price_data.get('significant_pump', False) else 0
+            feature_dict['price_above_ema'] = 1 if price_data.get('price_above_ema', False) else 0
+
+            # 4. Ознаки книги ордерів
+            orderbook_data = result['raw_data']['order_book']
+            feature_dict['buy_sell_ratio'] = orderbook_data.get('buy_sell_ratio', 1.0)
+            feature_dict['top_concentration'] = orderbook_data.get('top_concentration', 0)
+            feature_dict['has_buy_wall'] = 1 if orderbook_data.get('has_buy_wall', False) else 0
+            feature_dict['has_sell_wall'] = 1 if orderbook_data.get('has_sell_wall', False) else 0
+            feature_dict['volume_concentration'] = orderbook_data.get('volume_concentration', 1.0)
+
+            # 5. Ознаки соціальних даних
+            social_data = result['raw_data']['social']
+            feature_dict['social_percent_change'] = social_data.get('percent_change', 0) / 100
+            feature_dict['social_growth_acceleration'] = social_data.get('growth_acceleration', 0)
+
+            # 6. Ознаки часових патернів
+            time_data = result['raw_data']['time_pattern']
+            feature_dict['time_risk_score'] = time_data.get('time_risk_score', 0)
+            feature_dict['is_high_risk_hour'] = 1 if time_data.get('is_high_risk_hour', False) else 0
+            feature_dict['is_weekend'] = 1 if time_data.get('is_weekend', False) else 0
+
+            # 7. Ознаки кореляції ринків
+            correlation_data = result['raw_data']['correlation']
+            feature_dict['correlation_signal'] = 1 if correlation_data.get('correlation_signal', False) else 0
+            feature_dict['correlated_coins_count'] = len(correlation_data.get('correlated_coins', []))
+            feature_dict['correlation_type_pump_group'] = 1 if correlation_data.get(
+                'correlation_type') == 'pump_group' else 0
+            feature_dict['correlation_strength'] = correlation_data.get('correlation_strength', 0.0)
+
+            # 8. Нові ознаки патернів
+            feature_dict['vertical_jump'] = 1 if price_data.get('vertical_price_jump', False) else 0
+            feature_dict['jump_percent'] = price_data.get('jump_percent', 0) / 100
+            feature_dict['v_pattern'] = 1 if price_data.get('v_pattern_detected', False) else 0
+            feature_dict['large_green_candle'] = 1 if price_data.get('large_green_candle', False) else 0
+            feature_dict['candle_body_percent'] = price_data.get('candle_body_percent', 0) / 100
+
+            # 9. Перевірка, чи всі ознаки у нашому словнику
+            for feature_name in settings.FEATURES:
+                if feature_name not in feature_dict:
+                    print(f"Попередження: ознака {feature_name} відсутня у результаті")
+                    feature_dict[feature_name] = 0.0
+
+        except Exception as e:
+            print(f"Помилка при витягуванні ознак: {str(e)}")
+
+            for feature_name in settings.FEATURES:
+                feature_dict[feature_name] = 0.0
+
+        # 10. Створюємо список ознак у ПРАВИЛЬНОМУ ПОРЯДКУ
         features = []
+        for feature_name in settings.FEATURES:
+            features.append(feature_dict.get(feature_name, 0.0))
 
-        # Ознаки об'єму
-        volume_data = result['raw_data']['volume']
-        features.extend([
-            volume_data.get('percent_change', 0) / 100,
-            volume_data.get('z_score', 0),
-            volume_data.get('anomaly_count', 0) / 5,
-            volume_data.get('volume_acceleration', 0)
-        ])
+        # 11. Додаткова діагностика
+        print(f"Витягнуто {len(features)} ознак у стандартному порядку")
 
-        # Ознаки ціни - оновлені з новими метриками
-        price_data = result['raw_data']['price']
-        features.extend([
-            price_data.get('price_change_1h', 0) / 100,
-            price_data.get('price_change_24h', 0) / 100,  # Важлива метрика для pump-and-dump
-            price_data.get('volatility_ratio', 0),
-            price_data.get('large_candles', 0) / 5,
-            price_data.get('consecutive_up', 0) / 5,
-            price_data.get('price_acceleration', 0)
-        ])
-
-        # Додаємо нові ознаки для виявлення pump-and-dump
-        distance_from_high = price_data.get('distance_from_high', 0) / 100
-        dump_phase = 1 if price_data.get('dump_phase', False) else 0
-        significant_pump = 1 if price_data.get('significant_pump', False) else 0
-        price_above_ema = 1 if price_data.get('price_above_ema', False) else 0
-
-        # Додаємо нові метрики до списку ознак
-        features.extend([
-            distance_from_high,
-            dump_phase,
-            significant_pump,
-            price_above_ema
-        ])
-
-        # Ознаки книги ордерів
-        orderbook_data = result['raw_data']['order_book']
-        features.extend([
-            orderbook_data.get('buy_sell_ratio', 1.0),
-            orderbook_data.get('top_concentration', 0),
-            1 if orderbook_data.get('has_buy_wall', False) else 0,
-            1 if orderbook_data.get('has_sell_wall', False) else 0,
-            orderbook_data.get('volume_concentration', 1.0)
-        ])
-
-        # Ознаки соціальних даних
-        social_data = result['raw_data']['social']
-        features.extend([
-            social_data.get('percent_change', 0) / 100,
-            social_data.get('growth_acceleration', 0)
-        ])
-
-        # Ознаки часових патернів
-        time_data = result['raw_data']['time_pattern']
-        features.extend([
-            time_data.get('time_risk_score', 0),
-            1 if time_data.get('is_high_risk_hour', False) else 0,
-            1 if time_data.get('is_weekend', False) else 0
-        ])
-
-        # Ознаки кореляції ринків
-        correlation_data = result['raw_data']['correlation']
-        features.extend([
-            1 if correlation_data.get('correlation_signal', False) else 0,
-            len(correlation_data.get('correlated_coins', [])),
-            1 if correlation_data.get('correlation_type') == 'pump_group' else 0,
-            correlation_data.get('correlation_strength', 0.0)
-        ])
-
-        # Вертикальний стрибок ціни
-        vertical_jump = 1 if price_data.get('vertical_price_jump', False) else 0
-        jump_percent = price_data.get('jump_percent', 0) / 100  # Нормалізація
-
-        # V-подібний патерн
-        v_pattern = 1 if price_data.get('v_pattern_detected', False) else 0
-
-        # Велика зелена свічка
-        large_green_candle = 1 if price_data.get('large_green_candle', False) else 0
-        candle_body_percent = price_data.get('candle_body_percent', 0) / 100  # Нормалізація
-
-        # Додавання нових ознак до загального списку
-        features.extend([
-            vertical_jump,
-            jump_percent,
-            v_pattern,
-            large_green_candle,
-            candle_body_percent,
-        ])
-
-        expected_features = 33
-
-        if len(features) != expected_features:
-            print(f"WARNING: Feature count mismatch - got {len(features)}, expected {expected_features}")
-
-            if len(features) > expected_features:
-                features = features[:expected_features]
-            else:
-                features.extend([0] * (expected_features - len(features)))
+        if len(features) != 33:
+            print(f"ПОПЕРЕДЖЕННЯ: Неправильна кількість ознак: {len(features)}, очікується 33")
 
         return features
 

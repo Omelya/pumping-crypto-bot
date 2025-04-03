@@ -67,6 +67,26 @@ DEFAULT_SIGNAL_WEIGHTS = {
     'Висока концентрація об\'єму': 0.20,
 }
 
+FEATURES = [
+    # Ознаки об'єму (4)
+    'volume_percent_change', 'volume_z_score', 'volume_anomaly_count', 'volume_acceleration',
+    # Ознаки ціни (6)
+    'price_change_1h', 'price_change_24h', 'volatility_ratio', 'large_candles',
+    'consecutive_up', 'price_acceleration',
+    # Додаткові ознаки pump-and-dump (4)
+    'distance_from_high', 'dump_phase', 'significant_pump', 'price_above_ema',
+    # Ознаки книги ордерів (4)
+    'buy_sell_ratio', 'top_concentration', 'has_buy_wall', 'has_sell_wall', 'volume_concentration',
+    # Ознаки соціальних даних (2)
+    'social_percent_change', 'social_growth_acceleration',
+    # Ознаки часових патернів (3)
+    'time_risk_score', 'is_high_risk_hour', 'is_weekend',
+    # Ознака кореляції (1)
+    'correlation_signal', 'correlated_coins_count', 'correlation_type_pump_group', 'correlation_strength',
+    # Нові ознаки патернів (5)
+    'vertical_jump', 'jump_percent', 'v_pattern', 'large_green_candle', 'candle_body_percent',
+]
+
 # Години підвищеного ризику (ніч та пізній вечір)
 HIGH_RISK_HOURS = {0, 1, 2, 3, 4, 20, 21, 22, 23}
 
